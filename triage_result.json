@@ -1,0 +1,16 @@
+{
+  "process_categories": [
+    "PBF"
+  ],
+  "process_subtypes": [
+    "LPBF"
+  ],
+  "materials_mentioned": [
+    "Ti-6Al-4V"
+  ],
+  "sections_present": [
+    "Methods",
+    "Results"
+  ],
+  "likely_relevant_taxonomy_sections": []
+}
