@@ -101,9 +101,17 @@ PAPER TEXT:
 {paper_text}
 """
 
-def build_triage_prompt(sectioned_text):
-    """sectioned_text: dict of {section_name: text}, as returned by strip_markup_sectioned."""
-    labeled = "\n\n".join(f"[SECTION: {name}]\n{text}" for name, text in sectioned_text.items())
+def build_triage_prompt(sectioned_text, max_chars_per_section=1500):
+    """sectioned_text: dict of {section_name: text}, as returned by strip_markup_sectioned.
+    Truncates each section for the triage pass — it only needs enough text to
+    classify materials/process/relevance, not the full body (that's stage 2's job)."""
+    parts = []
+    for name, text in sectioned_text.items():
+        snippet = text[:max_chars_per_section]
+        if len(text) > max_chars_per_section:
+            snippet += " ...[truncated]"
+        parts.append(f"[SECTION: {name}]\n{snippet}")
+    labeled = "\n\n".join(parts)
     return TRIAGE_PROMPT.format(paper_text=labeled)
 
 
@@ -123,7 +131,7 @@ def call_llm(prompt, model="llama3.1", host="http://localhost:11434"):
         headers={"Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=300) as resp:
+        with urllib.request.urlopen(req, timeout=600) as resp:
             body = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         err_body = e.read().decode("utf-8")
@@ -168,20 +176,28 @@ def get_relevant_text(triage, sectioned):
 
 
 if __name__ == "__main__":
-    sample_markup = """
-    <html><body>
-    <h2>Introduction</h2>
-    <p>Additive manufacturing has grown rapidly in the last decade.</p>
-    <h2>Methods</h2>
-    <p>Ti-6Al-4V powder was processed using laser powder bed fusion (LPBF)
-    with a laser power of 195 W and scan speed of 1100 mm/s.</p>
-    <h2>Results</h2>
-    <p>Relative density reached 99.4% after hot isostatic pressing.</p>
-    <h2>References</h2>
-    <p>[1] Smith et al. 2020.</p>
-    </body></html>
-    """
+    import sys
+
+    if len(sys.argv) > 1:
+        # usage: python3 triage_pipeline.py path/to/paper.xml
+        with open(sys.argv[1], encoding="utf-8") as f:
+            sample_markup = f.read()
+    else:
+        sample_markup = """
+        <html><body>
+        <h2>Introduction</h2>
+        <p>Additive manufacturing has grown rapidly in the last decade.</p>
+        <h2>Methods</h2>
+        <p>Ti-6Al-4V powder was processed using laser powder bed fusion (LPBF)
+        with a laser power of 195 W and scan speed of 1100 mm/s.</p>
+        <h2>Results</h2>
+        <p>Relative density reached 99.4% after hot isostatic pressing.</p>
+        <h2>References</h2>
+        <p>[1] Smith et al. 2020.</p>
+        </body></html>
+        """
+
     triage, sectioned = run_triage(sample_markup)
     relevant_text = get_relevant_text(triage, sectioned)
     print("\n--- TEXT TO SEND TO STAGE-2 EXTRACTOR ---")
-    print(relevant_text)
+    print(relevant_text[:2000], "..." if len(relevant_text) > 2000 else "")
