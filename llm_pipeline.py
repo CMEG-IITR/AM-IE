@@ -11,8 +11,8 @@ Flow:
   6. Save verified + flagged results separately.
 
 This is deliberately minimal — one call per paper, one verification pass.
-Swap in whatever LLM client you have (Anthropic, OpenAI, local model server
-with an OpenAI-compatible API, etc.) in call_llm().
+Detailed extraction runs on GPT-5-mini via call_gpt_mini(). (Triage stays on
+local Ollama llama3.1 — see triage_pipeline.py's own call_llm().)
 """
 import json
 import re
@@ -70,51 +70,71 @@ def build_prompt(schema, paper_text):
     return PROMPT_TEMPLATE.format(schema=schema, paper_text=paper_text)
 
 
-# ---------- 3. Call the LLM (Ollama, local, free) ----------
-def call_llm(prompt, model="llama3.1", host="http://localhost:11434"):
+# ---------- 3. Call the LLM (OpenAI, GPT-5-mini) ----------
+# Detailed extraction now runs on GPT-5-mini instead of local Ollama. Triage
+# (triage_pipeline.py) keeps its own separate call_llm() targeting Ollama
+# llama3.1 — that one is untouched and lives in that file, not here.
+import os
+from openai import OpenAI
+
+
+def call_gpt_mini(prompt: str, model: str = "gpt-5-mini") -> str:
     """
-    Uses Ollama running locally — free, no API key, no internet call needed
-    once the model is pulled.
-
-    Setup (one-time):
-        1. Install: https://ollama.com/download
-        2. Pull a model:  ollama pull llama3.1        (~4.7GB, general purpose)
-                       or  ollama pull mistral         (~4.1GB, faster/smaller)
-                       or  ollama pull qwen2.5:7b       (good at following JSON format)
-        3. Ollama runs a local server automatically at localhost:11434
-
-    Swap `model=` to whichever you pulled.
+    Calls the OpenAI API using the GPT-5-mini model.
+    Requires the OPENAI_API_KEY environment variable to be set (e.g. via
+    `export OPENAI_API_KEY=...` or a .env loader) — this no longer depends
+    on Colab's userdata, so it works the same in a notebook or a plain script.
     """
-    import urllib.request
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
-    payload = json.dumps({
-        "model": model,
-        "prompt": prompt,
-        "stream": False,
-        "format": "json",  # ask Ollama to constrain output to valid JSON
-        "options": {"temperature": 0},  # deterministic, less prone to drifting off-schema
-    }).encode("utf-8")
+    try:
+        response = client.responses.create(
+            model=model,
+            input=prompt,
+            # To enforce your JSON structure, add a 'text' parameter:
+            # text={"format": {"type": "json_schema", "name": "extraction", "schema": YOUR_SCHEMA}},
+        )
+        return response.output_text
 
-    req = urllib.request.Request(
-        f"{host}/api/generate",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=300) as resp:
-        body = json.loads(resp.read().decode("utf-8"))
-    return body["response"]
+    except Exception as e:
+        # The SDK automatically retries rate limits and connection errors
+        print(f"An API error occurred: {e}")
+        raise
 
 
 # ---------- 4. Parse response ----------
+def _normalize_keys(obj):
+    """Recursively strip leading/trailing whitespace from dict keys."""
+    if isinstance(obj, dict):
+        return {k.strip(): _normalize_keys(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_normalize_keys(item) for item in obj]
+    return obj
+
 def parse_response(raw_text):
-    # strip markdown code fences if present
     cleaned = re.sub(r"^```json\s*|\s*```$", "", raw_text.strip())
-    return json.loads(cleaned)
+    return _normalize_keys(json.loads(cleaned))
 
 
 # ---------- 5. Verify: value/material must actually appear in quote ----------
-def _quote_in_paper(quote, paper_text):
-    return bool(quote) and quote.strip()[:30].lower() in paper_text.lower()
+def _quote_in_paper(quote, paper_text, ngram=6):
+    """Check that the quote (or a meaningful chunk of it) actually appears in the
+    paper. Uses a sliding n-gram of words, requiring at least one contiguous
+    run of `ngram` words to match. More robust than a first-N-chars prefix."""
+    if not quote or not paper_text:
+        return False
+    q = re.sub(r"\s+", " ", quote.strip().lower())
+    p = re.sub(r"\s+", " ", paper_text.lower())
+    if q in p:
+        return True
+    q_words = q.split()
+    if len(q_words) < ngram:
+        return q in p
+    for i in range(len(q_words) - ngram + 1):
+        chunk = " ".join(q_words[i:i + ngram])
+        if chunk in p:
+            return True
+    return False
 
 def verify_materials(materials, paper_text):
     verified, flagged = [], []
@@ -126,30 +146,68 @@ def verify_materials(materials, paper_text):
         (verified if row["verified"] else flagged).append(row)
     return verified, flagged
 
-def verify_parameters(extracted_parameters, paper_text, known_materials):
+def verify_parameters(extracted_parameters, paper_text, known_materials,
+                     source_kind="research-article"):
     verified, flagged = [], []
     for row in extracted_parameters:
-        value = str(row.get("value", ""))
-        quote = row.get("quote", "")
-        material = row.get("material", "")
+        value = str(row.get("value", "") or "")
+        quote = str(row.get("quote", "") or "")
+        context = str(row.get("context", "") or "")
+        material = str(row.get("material", "") or "")
+        parameter = str(row.get("parameter", "") or "")
+        provenance = row.get("provenance") or {}
 
-        value_in_quote = value.lower() in quote.lower()
-        quote_ok = _quote_in_paper(quote, paper_text)
-        # material tag, if given, must be one we actually verified in the materials list
-        material_ok = (not material) or (material in known_materials)
+        if not value.strip():
+            row["verified"] = False
+            row["flag_reason"] = "empty value"
+            flagged.append(row)
+            continue
 
-        row["verified"] = value_in_quote and quote_ok and material_ok
-        if material and not material_ok:
-            row["flag_reason"] = "material not confirmed in materials list"
+        value_in_paper = value.lower() in paper_text.lower()
+        value_in_quote = bool(quote.strip()) and value.lower() in quote.lower()
+        value_in_context = bool(context.strip()) and value.lower() in context.lower()
+
+        if source_kind == "review":
+            # Review mode: table cells are legit. Accept if value appears in
+            # the paper AND either (a) parameter name appears in the quote or
+            # context, or (b) row is cited-secondary with an explicit source.
+            param_nearby = (
+                (bool(quote) and parameter.lower() in quote.lower()) or
+                (bool(context) and parameter.lower() in context.lower())
+            )
+            cited = bool(provenance.get("cited_work") or provenance.get("citation_marker"))
+            structural_ok = bool(quote.strip()) or bool(context.strip())
+            row["verified"] = value_in_paper and structural_ok and (param_nearby or cited)
+            if not row["verified"]:
+                if not value_in_paper:
+                    row["flag_reason"] = "value not found in paper"
+                elif not structural_ok:
+                    row["flag_reason"] = "no quote and no context"
+                else:
+                    row["flag_reason"] = "parameter name not near value and no citation"
+        else:
+            # Primary mode: strict — value must appear in quote, quote must
+            # appear in paper, material (if tagged) must be confirmed.
+            quote_ok = _quote_in_paper(quote, paper_text)
+            material_ok = (not material) or (material in known_materials)
+            row["verified"] = value_in_quote and quote_ok and material_ok
+            if not row["verified"]:
+                if not value_in_quote:
+                    row["flag_reason"] = "value not in quote"
+                elif not quote_ok:
+                    row["flag_reason"] = "quote not in paper"
+                else:
+                    row["flag_reason"] = "material not confirmed"
+
         (verified if row["verified"] else flagged).append(row)
     return verified, flagged
 
 
 # ---------- 6. Full pipeline ----------
-def run_pipeline(paper_text, flat_json_path="vocab_flat.json"):
+def run_pipeline(paper_text, flat_json_path="vocab_flat.json", model="gpt-5-mini"):
     schema = load_schema(flat_json_path)
     prompt = build_prompt(schema, paper_text)
-    raw = call_llm(prompt)
+    raw = call_gpt_mini(prompt, model=model)
     parsed = parse_response(raw)
 
     mat_verified, mat_flagged = verify_materials(parsed.get("materials", []), paper_text)
