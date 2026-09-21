@@ -623,6 +623,20 @@ if __name__ == "__main__":
     for code in triage.get("process_categories", []):
         per_category_text[code] = relevant_text if relevant_text else full_text
 
+    # Symbolic (non-AI) material classification — no extra LLM call, just a
+    # lookup/regex pass over triage's materials_mentioned/process_subtypes
+    # (L8: material composition) and the paper text (L9: post-processing
+    # steps, since those are described in prose, not listed as materials).
+    # L8 + L9 come back as ONE merged list — the taxonomy itself renders them
+    # as a single shared panel, not two levels to track separately.
+    try:
+        from material_classifier import classify_material
+        material_info = classify_material(triage, scan_text=full_text)
+        print("\n--- Material classification (symbolic, no LLM) ---")
+        print(json.dumps(material_info, indent=2, ensure_ascii=False))
+    except ImportError:
+        material_info = None  # material_classifier.py not present — skip
+
     print("\n--- Running category skills ---")
     results = run_orchestrator(triage, per_category_text, skill_library, subtype_skill_library, model="gpt-5-mini")
     for code, r in results.items():
