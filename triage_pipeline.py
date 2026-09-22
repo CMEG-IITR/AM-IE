@@ -341,8 +341,13 @@ def _is_explicitly_missing(row):
                      "none", "not stated", "not specified", "not given", "unknown"}
 
 
-# ---------- 3. Call LLM (same Ollama setup as llm_pipeline.py) ----------
-def call_llm(prompt, model="llama3.1", host="http://localhost:11434"):
+# ---------- 3. Call LLM — backend is togglable: local Ollama (default,
+# unchanged) or GPT-5-mini (same call llm_pipeline.py uses for extraction).
+# Ollama is NOT a hard dependency: it's only imported/hit over HTTP when
+# backend="ollama" is actually used, and gpt5mini needs no local server at
+# all — so running triage with backend="gpt5mini" works with no Ollama
+# installed or running anywhere.
+def _call_llm_ollama(prompt, model="llama3.1", host="http://localhost:11434"):
     import urllib.request, urllib.error
     payload = json.dumps({
         "model": model,
@@ -363,6 +368,27 @@ def call_llm(prompt, model="llama3.1", host="http://localhost:11434"):
         err_body = e.read().decode("utf-8")
         raise RuntimeError(f"Ollama returned {e.code}: {err_body}") from None
     return body["response"]
+
+
+def _call_llm_gpt5mini(prompt, model="gpt-5-mini"):
+    # Lazy import: keeps the openai package (and OPENAI_API_KEY requirement)
+    # out of the ollama-backend path entirely.
+    from llm_pipeline import call_gpt_mini
+    return call_gpt_mini(prompt, model=model)
+
+
+def call_llm(prompt, model="llama3.1", host="http://localhost:11434", backend="ollama"):
+    """backend: "ollama" (default — local server, unchanged behavior) or
+    "gpt5mini" (routes to llm_pipeline.call_gpt_mini; ignores `host`).
+    `model` should be the model name appropriate to whichever backend is
+    selected (e.g. "llama3.1" for ollama, "gpt-5-mini" for gpt5mini) —
+    callers that only flip `backend` without changing `model` get the
+    default "llama3.1" sent to GPT-5-mini's endpoint, so pass both together."""
+    if backend == "gpt5mini":
+        return _call_llm_gpt5mini(prompt, model=model)
+    elif backend == "ollama":
+        return _call_llm_ollama(prompt, model=model, host=host)
+    raise ValueError(f"backend must be 'ollama' or 'gpt5mini', got {backend!r}")
 
 
 def _normalize_keys(obj):
@@ -504,11 +530,20 @@ def detect_categories_by_keyword(text):
     return found
 
 
-def run_triage(raw_markup_or_text, is_markup=True, model="llama3.1", host="http://localhost:11434"):
+def run_triage(raw_markup_or_text, is_markup=True, model="llama3.1",
+                host="http://localhost:11434", backend="ollama"):
+    """backend: "ollama" (default, local llama3.1 — unchanged) or "gpt5mini"
+    (routes triage through GPT-5-mini via llm_pipeline.call_gpt_mini instead,
+    no local Ollama server needed). If backend="gpt5mini" and `model` is
+    left at its default, it's swapped to "gpt-5-mini" automatically so
+    callers don't have to pass both just to flip the backend."""
+    if backend == "gpt5mini" and model == "llama3.1":
+        model = "gpt-5-mini"
+
     sectioned = strip_markup_sectioned(raw_markup_or_text) if is_markup else {"body": raw_markup_or_text}
     prompt = build_triage_prompt(sectioned)
 
-    raw = call_llm(prompt, model=model, host=host)
+    raw = call_llm(prompt, model=model, host=host, backend=backend)
     triage = parse_response(raw)
 
     if not _validate_triage_schema(triage):
@@ -531,7 +566,7 @@ def run_triage(raw_markup_or_text, is_markup=True, model="llama3.1", host="http:
             f"material(s) actually fed into the printer, not reagents or chemicals. Use an "
             f"empty list if none can be identified."
         )
-        raw = call_llm(retry_prompt, model=model, host=host)
+        raw = call_llm(retry_prompt, model=model, host=host, backend=backend)
         triage = parse_response(raw)
 
         if not _validate_triage_schema(triage):
@@ -616,11 +651,23 @@ def get_relevant_text(triage, sectioned):
 
 
 if __name__ == "__main__":
-    import sys
+    import argparse
 
-    if len(sys.argv) > 1:
-        # usage: python3 triage_pipeline.py path/to/paper.xml
-        with open(sys.argv[1], encoding="utf-8") as f:
+    ap = argparse.ArgumentParser(description="Run paper triage.")
+    ap.add_argument("paper_path", nargs="?", default=None,
+                     help="Path to a paper markup file. Omit to use the built-in sample paper.")
+    ap.add_argument("--backend", choices=["ollama", "gpt5mini"], default="ollama",
+                     help="Which LLM backend runs triage (default: ollama). "
+                          "'gpt5mini' needs no local Ollama server, only OPENAI_API_KEY.")
+    ap.add_argument("--model", default=None,
+                     help="Model name for the chosen backend. Defaults to 'llama3.1' for "
+                          "ollama, 'gpt-5-mini' for gpt5mini.")
+    ap.add_argument("--host", default="http://localhost:11434",
+                     help="Ollama server URL (ignored for --backend gpt5mini).")
+    args = ap.parse_args()
+
+    if args.paper_path:
+        with open(args.paper_path, encoding="utf-8") as f:
             sample_markup = f.read()
     else:
         sample_markup = """
@@ -637,7 +684,8 @@ if __name__ == "__main__":
         </body></html>
         """
 
-    triage, sectioned = run_triage(sample_markup)
+    model = args.model or ("gpt-5-mini" if args.backend == "gpt5mini" else "llama3.1")
+    triage, sectioned = run_triage(sample_markup, model=model, host=args.host, backend=args.backend)
     relevant_text = get_relevant_text(triage, sectioned)
     print("\n--- TEXT TO SEND TO STAGE-2 EXTRACTOR ---")
     print(relevant_text[:2000], "..." if len(relevant_text) > 2000 else "")
