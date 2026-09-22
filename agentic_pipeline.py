@@ -332,6 +332,73 @@ def reconcile_categories(triage_result, subtype_skills):
 
 
 # ---------- 3. Extraction prompt for a loaded skill ----------
+PINNED_CATEGORY_PROMPT = """You are an orchestrating extraction agent. You have just loaded the
+"{category_name}" ({category_code}) skill — a scoped taxonomy of parameters
+relevant to this AM process category. Use ONLY this skill's parameters for
+this pass; do not use knowledge from other process categories.
+
+The material has ALREADY BEEN IDENTIFIED for you: everything you extract in
+this pass is about "{target_material}" specifically, processed via
+{category_code}. Do NOT extract parameters belonging to any other material
+mentioned in the paper (e.g. reagents, solvents, or a second material the
+paper compares against) — only {target_material}. Because the material is
+fixed, do NOT include a "material" field in your output rows.
+
+Extract every value from the paper below that matches a parameter in this
+skill's taxonomy AND belongs to {target_material}'s process. Return ONLY
+valid JSON, no prose, in this shape:
+
+{{
+  "extracted_parameters": [
+    {{
+      "parameter": "<exact taxonomy name>",
+      "value": "...",
+      "unit": "...",
+      "quote": "..."
+    }}
+  ]
+}}
+
+If the paper does not report any parameters from this skill's taxonomy for
+{target_material} — for example, because it is a review, or because
+{category_code} is used only incidentally and no process parameters are
+reported — return: {{"extracted_parameters": []}}
+
+An empty result is the CORRECT answer in that case, not a failure.
+
+Rules:
+- Only use parameter names from the {category_code} skill's taxonomy below.
+- The "quote" must be an exact sentence/clause copied from the paper, containing the value.
+- Do not include parameters the paper doesn't report. Do not fabricate.
+- Every extracted row is about {target_material}. If a value clearly belongs
+  to a different material, skip it — do not extract it under this pass.
+
+**CRITICAL — how to handle absent parameters:**
+- If the paper does not mention a parameter at all, OMIT it entirely.
+- If the paper mentions a parameter but gives no numeric value (e.g. "at an
+  adaptable layer height"), return it with `"value": null` and add
+  `"note": "mentioned but no value reported"`. Do NOT put "not reported" or
+  any other string into `value`.
+- NEVER emit a row with an empty `value` AND empty `quote`. If you have
+  nothing, return `{{"extracted_parameters": []}}` or omit the parameter —
+  an empty row is treated as a failed extraction.
+- Do not fabricate quotes. Every `quote` must be a contiguous substring of the
+  paper text. Do not stitch together two sentences from different sections.
+- Do not pull numbers from non-printing sections (e.g. stirring speeds from a
+  chemical extraction protocol) and label them as print parameters. If the
+  quote is not from a section describing the printing process, do not extract.
+
+{synonym_text}
+
+{hints_text}
+
+{category_code} SKILL TAXONOMY:
+{schema}
+
+PAPER TEXT:
+{paper_text}
+"""
+
 CATEGORY_PROMPT = """You are an orchestrating extraction agent. You have just loaded the
 "{category_name}" ({category_code}) skill — a scoped taxonomy of parameters
 relevant to this AM process category. Use ONLY this skill's parameters for
@@ -472,7 +539,17 @@ PAPER TEXT:
 {paper_text}
 """
 
-def build_skill_prompt(skill, paper_text, source_kind="research-article"):
+def build_skill_prompt(skill, paper_text, source_kind="research-article", target_material=None):
+    if target_material and source_kind != "review":
+        return PINNED_CATEGORY_PROMPT.format(
+            category_name=skill.name,
+            category_code=skill.code,
+            target_material=target_material,
+            schema=skill.build_schema_text(),
+            synonym_text=skill.build_synonym_text(),
+            hints_text=skill.build_hints_text(),
+            paper_text=paper_text,
+        )
     template = REVIEW_CATEGORY_PROMPT if source_kind == "review" else CATEGORY_PROMPT
     return template.format(
         category_name=skill.name,
@@ -502,15 +579,68 @@ def _is_explicitly_missing(row):
     return value in {"not reported", "not reported in the paper", "n/a", "na",
                      "none", "not stated", "not specified", "not given", "unknown"}
 
-def invoke_skill(skill, paper_text, source_kind="research-article", model="gpt-5-mini"):
-    prompt = build_skill_prompt(skill, paper_text, source_kind=source_kind)
+
+def _build_param_to_section_index(skill):
+    """{exact taxonomy parameter name -> section name} for this skill, built
+    from skill.param_sections. Pure dict — no LLM call. Used to tag every
+    extracted row with WHICH taxonomy section (L4/L5/L8/L9/...) it actually
+    came from, since the flat prompt sent to the model loses that grouping
+    and the model's response is just a bare 'parameter' string with no
+    section attached."""
+    index = {}
+    for section_name, params in skill.param_sections.items():
+        for p in params:
+            index[p] = section_name
+    return index
+
+
+def _tag_taxonomy_section(rows, param_to_section):
+    """Adds 'taxonomy_section' to each row: the exact section name if the
+    row's 'parameter' string matches a real taxonomy tag for this skill,
+    else 'NOT IN SCHEMA (parameter name not found in this skill's taxonomy
+    — check for a hallucinated/mismatched tag)'. Mutates and returns rows."""
+    for row in rows:
+        row["taxonomy_section"] = param_to_section.get(
+            row.get("parameter"),
+            "NOT IN SCHEMA (parameter name not found in this skill's taxonomy)",
+        )
+    return rows
+
+
+def invoke_skill(skill, paper_text, source_kind="research-article", model="gpt-5-mini",
+                  target_material=None):
+    """
+    target_material: if set (and source_kind != "review"), the material is
+    PINNED before extraction even starts — build_skill_prompt uses
+    PINNED_CATEGORY_PROMPT, which doesn't ask the model for a "material"
+    field at all (nothing to get wrong). Every returned row gets
+    target_material force-set as its material, and verify_parameters is
+    given known_materials={target_material} directly — there is no
+    ambiguity left to verify, so the old "material not confirmed" flag
+    class is structurally eliminated for this path rather than patched
+    around after the fact.
+    """
+    prompt = build_skill_prompt(skill, paper_text, source_kind=source_kind,
+                                 target_material=target_material)
     raw = call_gpt_mini(prompt, model=model)
     parsed = parse_response(raw)
 
-    mat_verified, mat_flagged = verify_materials(parsed.get("materials", []), paper_text)
-    known_materials = {m["material"] for m in mat_verified}
+    pinned = bool(target_material) and source_kind != "review"
+
+    if pinned:
+        mat_verified = [{"material": target_material, "material_form": "", "quote": "",
+                          "verified": True, "note": "pinned by triage's printed_materials"}]
+        mat_flagged = []
+        known_materials = {target_material}
+    else:
+        mat_verified, mat_flagged = verify_materials(parsed.get("materials", []), paper_text)
+        known_materials = {m["material"] for m in mat_verified}
 
     raw_params = parsed.get("extracted_parameters", [])
+    if pinned:
+        for r in raw_params:
+            r["material"] = target_material  # force — model wasn't even asked for this field
+
     hollow = [r for r in raw_params if _is_hollow_row(r, source_kind)]
     missing = [r for r in raw_params if _is_explicitly_missing(r)]
     real = [r for r in raw_params if not _is_hollow_row(r, source_kind) and not _is_explicitly_missing(r)]
@@ -524,11 +654,33 @@ def invoke_skill(skill, paper_text, source_kind="research-article", model="gpt-5
         real, paper_text, known_materials, source_kind=source_kind
     )
 
+    # Symbolic (no LLM call): flag whether each row's value actually parses
+    # as a number, so "find a parameter and note its numerical value" is
+    # answerable directly from the output — some taxonomy parameters are
+    # legitimately categorical (e.g. Photo-initiator Type), so non-numeric
+    # rows are flagged, not dropped.
+    try:
+        from si_units import _extract_numeric
+        for row in param_verified + param_flagged:
+            row["value_is_numeric"] = _extract_numeric(row.get("value")) is not None
+    except ImportError:
+        pass
+
     for row in param_verified + param_flagged:
         row["skill_used"] = skill.code
 
+    # Symbolic (no LLM call): tag every row with the exact taxonomy section
+    # it came from — L4/L5/L8/L9/etc — by exact-matching skill.param_sections,
+    # the same schema that was sent in the prompt. A row whose 'parameter'
+    # string doesn't match anything in that schema gets flagged as
+    # off-schema rather than silently passing through as if it were valid.
+    param_to_section = _build_param_to_section_index(skill)
+    _tag_taxonomy_section(param_verified, param_to_section)
+    _tag_taxonomy_section(param_flagged, param_to_section)
+
     return {
         "skill": skill.code,
+        "material": target_material,  # None for the unpinned/review fallback path
         "materials": {"verified": mat_verified, "flagged": mat_flagged},
         "parameters": {
             "verified": param_verified,
@@ -543,32 +695,81 @@ def invoke_skill(skill, paper_text, source_kind="research-article", model="gpt-5
 def run_orchestrator(triage_result, relevant_text_by_category, skill_library,
                       subtype_skill_library=None, model="gpt-5-mini"):
     """
-    triage_result: output of triage_pipeline.run_triage() — must include
-                   'process_categories' (list of codes like ["PBF", "DED"]) and,
-                   ideally, 'process_subtypes' (list of free-text guesses like ["LPBF", "DLP"]).
+    Primary path: iterates triage_result['printed_materials'] — each entry
+    pins ONE build material to the ONE process that made it, e.g.
+    {"material": "Clear IV resin", "process_category": "VPP",
+     "process_subtype": "stereolithography"}. For each pair, resolves the
+    matching skill and calls invoke_skill with that material FIXED, so every
+    extracted parameter is unambiguously tied to a known material — no
+    "material not confirmed" guesswork left for verify_parameters to do.
+
+    Fallback path: if triage found no printed_materials (e.g. a pure review
+    paper with no build material of its own), falls back to the old
+    category-only loop with no material pinned.
+
     relevant_text_by_category: dict {category_code: paper_text_to_use}.
-    skill_library: dict of L1 CategorySkill, from build_skill_library().
-    subtype_skill_library: optional dict of L2 CategorySkill, from build_subtype_skill_library().
-                   If provided, the orchestrator tries to match triage's subtype guess to a
-                   narrower L2 skill first; falls back to the L1 skill if no confident match.
-    model: the single orchestrating GPT-5-mini call used for every skill invocation.
+    skill_library / subtype_skill_library: from build_skill_library() /
+                   build_subtype_skill_library().
+    model: the GPT-5-mini model string used for every skill invocation.
     """
+    printed_materials = triage_result.get("printed_materials", [])
+    source_kind = triage_result.get("_source_kind", "research-article")
+    results = {}
+
+    if printed_materials:
+        # if two entries share a process_category, their result keys need to
+        # be disambiguated by material; otherwise the plain skill code is fine
+        codes_seen = [e.get("process_category") for e in printed_materials]
+        needs_material_suffix = len(codes_seen) != len(set(codes_seen))
+
+        for entry in printed_materials:
+            material = entry.get("material")
+            code = entry.get("process_category")
+            subtype_text = entry.get("process_subtype", "")
+            if not material or not code:
+                print(f"Warning: skipping malformed printed_materials entry {entry}")
+                continue
+
+            text = relevant_text_by_category.get(code)
+            if not text:
+                print(f"Warning: no text provided for category {code} "
+                      f"(material '{material}'), skipping")
+                continue
+
+            skill, used_level = None, "L1"
+            if subtype_skill_library and subtype_text:
+                skill = match_subtype(code, [subtype_text], subtype_skill_library)
+                if skill:
+                    used_level = "L2"
+            if not skill:
+                skill = skill_library.get(code)
+            if not skill:
+                print(f"Warning: no skill defined for category {code}, skipping")
+                continue
+
+            print(f"Orchestrator loading skill: {skill.code} ({skill.name}) [{used_level}] "
+                  f"for material '{material}'...")
+            key = f"{skill.code}::{material}" if needs_material_suffix else skill.code
+            results[key] = invoke_skill(
+                skill, text, model=model, source_kind=source_kind, target_material=material
+            )
+        json.dump(results, open("agentic_extraction_results.json", "w"), indent=2)
+        return results
+
+    # --- fallback: no printed_materials (e.g. review paper) — old behavior ---
+    print("Note: triage found no printed_materials — falling back to "
+          "category-level extraction with no material pinned.")
     process_subtypes = triage_result.get("process_subtypes", [])
     if subtype_skill_library:
         categories = reconcile_categories(triage_result, subtype_skill_library)
     else:
         categories = triage_result.get("process_categories", [])
-    results = {}
 
     for code in categories:
         text = relevant_text_by_category.get(code)
         if not text and relevant_text_by_category:
-            # in practice all categories get the same text in __main__, but if a
-            # category was added by reconciliation and lacks its own entry, prefer
-            # a shared fallback if one was passed, else skip rather than reuse an
-            # unrelated category's text.
             print(f"Warning: no dedicated text for {code} — skipping")
-            continue    
+            continue
         if not text:
             print(f"Warning: no text provided for category {code}, skipping")
             continue
@@ -579,17 +780,13 @@ def run_orchestrator(triage_result, relevant_text_by_category, skill_library,
             skill = match_subtype(code, process_subtypes, subtype_skill_library)
             if skill:
                 used_level = "L2"
-
         if not skill:
             skill = skill_library.get(code)
-
         if not skill:
             print(f"Warning: no skill defined for category {code}, skipping")
             continue
 
         print(f"Orchestrator loading skill: {skill.code} ({skill.name}) [{used_level}]...")
-        source_kind = triage_result.get("_source_kind", "research-article")
-        print(f"Orchestrator source kind: {source_kind}")
         results[skill.code] = invoke_skill(skill, text, model=model, source_kind=source_kind)
 
     json.dump(results, open("agentic_extraction_results.json", "w"), indent=2)
@@ -619,9 +816,10 @@ if __name__ == "__main__":
 
     # same relevant text handed to every identified category's skill, for a simple start
     full_text = "\n\n".join(sectioned.values())
-    per_category_text = {}
-    for code in triage.get("process_categories", []):
-        per_category_text[code] = relevant_text if relevant_text else full_text
+    codes_needed = set(triage.get("process_categories", [])) | {
+        e.get("process_category") for e in triage.get("printed_materials", []) if e.get("process_category")
+    }
+    per_category_text = {code: (relevant_text if relevant_text else full_text) for code in codes_needed}
 
     # Symbolic (non-AI) material classification — no extra LLM call, just a
     # lookup/regex pass over triage's materials_mentioned/process_subtypes
@@ -642,4 +840,6 @@ if __name__ == "__main__":
     for code, r in results.items():
         n_params = len(r["parameters"]["verified"])
         n_flagged = len(r["parameters"]["flagged"])
-        print(f"{code}: {n_params} verified, {n_flagged} flagged")
+        mat = r.get("material")
+        mat_label = f" [material: {mat}]" if mat else ""
+        print(f"{code}{mat_label}: {n_params} verified, {n_flagged} flagged")

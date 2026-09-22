@@ -225,16 +225,44 @@ any technique name mentioned in the paper to the correct code:
         merely unsure which of the above it is — re-read the technique name
         against this list first before choosing OTHER.
 
-You MUST return a single JSON object with EXACTLY these five keys — no more,
+You MUST return a single JSON object with EXACTLY these six keys — no more,
 no fewer, no other shape:
 
 {{
   "process_categories": ["<AM category codes present, from: BJT, DED, MEX, MJT, PBF, SHL, VPP, OTHER>"],
   "process_subtypes": ["<specific techniques mentioned, e.g. LPBF, FDM, DED-Wire>"],
-  "materials_mentioned": ["<material/alloy names as they appear in the text>"],
+  "printed_materials": [
+    {{
+      "material": "<exact name of a material actually FED INTO THE PRINTER as feedstock, e.g. 'Clear IV resin', 'Ti-6Al-4V powder'>",
+      "process_category": "<the category code (from the list above) that processes THIS material>",
+      "process_subtype": "<the specific technique that processes THIS material, e.g. 'stereolithography'>"
+    }}
+  ],
+  "materials_mentioned": ["<every OTHER material/chemical name as it appears in the text — reagents, solvents, post-processing/functionalization chemicals, analytes, etc. Do NOT repeat entries already listed in printed_materials.>"],
   "relevant_sections": ["<exact section names from the [SECTION: ...] markers that likely contain extractable parameter values, e.g. Methods, Materials, Results>"],
   "likely_relevant_taxonomy_sections": ["<AM taxonomy section names ONLY, in the exact 'Process Parameters — <subtype>' or 'Feedstock Properties — <material type>' format, e.g. 'Process Parameters — VAT-SLA', 'Feedstock Properties — Resin'. Do NOT use broad subject labels like 'Materials Science' or 'Chemistry' — those are not taxonomy sections.>"]
 }}
+
+CRITICAL — "printed_materials" is the FIXED, PINNED material this paper is
+actually about, paired with the exact process that made it. Follow these
+rules strictly:
+  - List the BUILD MATERIAL only — the thing physically fed into the 3D
+    printer (resin/powder/filament/wire/paste/etc). This is almost always
+    ONE material. List a SECOND entry ONLY if the paper genuinely compares
+    two distinct build materials/processes (e.g. two different resins each
+    printed on their own). Never list more than 2.
+  - Do NOT put reagents, solvents, catalysts, post-print functionalization
+    chemicals, analytes, or anything used in a downstream chemistry/testing
+    step into "printed_materials" — those belong in "materials_mentioned"
+    instead, even if they're mentioned prominently. Ask yourself: "did this
+    go INTO the printer?" If no, it's not a printed_material.
+  - Each entry's "process_category"/"process_subtype" describe HOW THAT
+    SPECIFIC MATERIAL was processed — not a generic list for the whole
+    paper. If the paper only has one build material, printed_materials will
+    have exactly one entry.
+  - If you cannot identify any material that was actually printed (e.g. the
+    paper is a pure literature review with no build material of its own),
+    return an empty list for "printed_materials" — do not force an entry.
 
 Include a section in "relevant_sections" if it plausibly contains AM
 parameters OR generic AM knowledge. This includes:
@@ -254,10 +282,12 @@ sections with no parameter-like content.
 PAPER TEXT:
 {paper_text}
 
-REMINDER: your entire response must be exactly one JSON object with these five
-keys: process_categories, process_subtypes, materials_mentioned,
-relevant_sections, likely_relevant_taxonomy_sections. Do not return anything
-else, do not return a subset of these keys, do not summarize the text instead.
+REMINDER: your entire response must be exactly one JSON object with these six
+keys: process_categories, process_subtypes, printed_materials,
+materials_mentioned, relevant_sections, likely_relevant_taxonomy_sections.
+Do not return anything else, do not return a subset of these keys, do not
+summarize the text instead. Remember: printed_materials is the FIXED build
+material(s) only (1-2 max) — everything else goes in materials_mentioned.
 """
 
 # Sections that carry no classification signal and only add noise/token bloat —
@@ -350,8 +380,8 @@ def parse_response(raw_text):
 
 # ---------- 4. Full triage pipeline ----------
 REQUIRED_TRIAGE_KEYS = {
-    "process_categories", "process_subtypes", "materials_mentioned",
-    "relevant_sections", "likely_relevant_taxonomy_sections",
+    "process_categories", "process_subtypes", "printed_materials",
+    "materials_mentioned", "relevant_sections", "likely_relevant_taxonomy_sections",
 }
 
 VALID_CATEGORY_CODES = {"BJT", "DED", "MEX", "MJT", "PBF", "SHL", "VPP", "OTHER"}
@@ -360,15 +390,27 @@ VALID_CATEGORY_CODES = {"BJT", "DED", "MEX", "MJT", "PBF", "SHL", "VPP", "OTHER"
 def _validate_triage_schema(triage):
     """Returns True only if the parsed response has all required keys AND
     process_categories contains only real taxonomy codes (not free-text guesses
-    like 'Synthesis' or '3D Printing')."""
+    like 'Synthesis' or '3D Printing') AND printed_materials is a well-formed
+    list of {material, process_category, process_subtype} dicts (empty list
+    is fine — a review paper may genuinely have no build material)."""
     if not (isinstance(triage, dict) and REQUIRED_TRIAGE_KEYS.issubset(triage.keys())):
         return False
     categories = triage.get("process_categories", [])
     if not isinstance(categories, list):
         return False
-    # empty list is fine (paper may genuinely have no AM content), but any
-    # non-empty entry must be a real code
-    return all(c in VALID_CATEGORY_CODES for c in categories)
+    if not all(c in VALID_CATEGORY_CODES for c in categories):
+        return False
+    printed = triage.get("printed_materials", [])
+    if not isinstance(printed, list) or len(printed) > 2:
+        return False
+    for entry in printed:
+        if not isinstance(entry, dict):
+            return False
+        if not {"material", "process_category", "process_subtype"}.issubset(entry.keys()):
+            return False
+        if entry["process_category"] and entry["process_category"] not in VALID_CATEGORY_CODES:
+            return False
+    return True
 
 
 # ---------- Keyword-based category detection (no LLM — deterministic safety net) ----------
@@ -476,14 +518,18 @@ def run_triage(raw_markup_or_text, is_markup=True, model="llama3.1", host="http:
               f"(keys: {list(triage.keys()) if isinstance(triage, dict) else type(triage)}, "
               f"bad category codes: {bad_categories}). Retrying once...")
         retry_prompt = prompt + (
-            "\n\nYour previous response was invalid. Two requirements you may have missed:\n"
-            f"1. Respond with ONLY the JSON object containing exactly these five keys: "
+            "\n\nYour previous response was invalid. Requirements you may have missed:\n"
+            f"1. Respond with ONLY the JSON object containing exactly these six keys: "
             f"{sorted(REQUIRED_TRIAGE_KEYS)}.\n"
             f"2. \"process_categories\" MUST contain ONLY codes from this exact list: "
             f"{sorted(VALID_CATEGORY_CODES)} — not free-text descriptions of what the paper "
             f"does. If the paper's 3D printing process doesn't clearly match one of BJT, DED, "
             f"MEX, MJT, PBF, SHL, VPP, use \"OTHER\". If unsure, use an empty list rather than "
-            f"inventing a category name."
+            f"inventing a category name.\n"
+            f"3. \"printed_materials\" MUST be a list of AT MOST 2 objects, each with exactly "
+            f"the keys \"material\", \"process_category\", \"process_subtype\" — the build "
+            f"material(s) actually fed into the printer, not reagents or chemicals. Use an "
+            f"empty list if none can be identified."
         )
         raw = call_llm(retry_prompt, model=model, host=host)
         triage = parse_response(raw)
