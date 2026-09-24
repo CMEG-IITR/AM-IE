@@ -46,7 +46,7 @@ Extract every value from the paper below that matches a parameter in the taxonom
       "value": "<value as reported>",
       "unit": "<unit as reported>",
       "material": "<which material from the materials list this parameter/value applies to, if the paper ties them together; else empty string>",
-      "quote": "<short verbatim sentence from the paper supporting it>"{category_field}
+      "quote": "<short verbatim sentence from the paper supporting it>"
     }}
   ]
 }}
@@ -57,7 +57,7 @@ Rules:
 - If a parameter's material association is genuinely unclear from context, leave "material" as an empty string rather than guessing.
 - The "quote" must be an exact sentence/clause copied from the paper text, containing the value (or material name, for materials list entries).
 - Do not include parameters the paper doesn't report.
-- Do not fabricate values or materials.{category_rule}
+- Do not fabricate values or materials.
 
 TAXONOMY:
 {schema}
@@ -66,32 +66,8 @@ PAPER:
 {paper_text}
 """
 
-# Appended to the JSON schema / rules only when categorize_mode="llm".
-_CATEGORY_FIELD = ''',
-      "property_category": "<one of: mechanical, physical, thermal, microstructural, electrical, or null if this parameter doesn't fit one of those five>"'''
-
-_CATEGORY_RULE = """
-- For "property_category": classify the parameter itself (not the material) into exactly one of mechanical / physical / thermal / microstructural / electrical based on what physical aspect it characterizes — e.g. UTS/Yield Strength/Hardness/Elastic Modulus -> mechanical; Density/Porosity/Surface Roughness -> physical; Tg/Melting Point/Thermal Conductivity -> thermal; Grain Size/Phase Fraction -> microstructural; Conductivity/Resistivity -> electrical. If a parameter is a process setting (e.g. Laser Power, Layer Thickness) or feedstock spec, classify it by the property it most directly drives. If it genuinely fits none of the five (e.g. a categorical field like Scan Strategy, or a post-processing step), use null. Do not guess if truly ambiguous — use null."""
-
-
-def build_prompt(schema, paper_text, categorize_mode="symbolic"):
-    """categorize_mode:
-      "symbolic" (default) -- prompt is unchanged; property_category is
-        added afterwards by param_category.tag_rows() via a taxonomy-HTML
-        lookup + hand-curated fallback map, no extra LLM judgment involved.
-      "llm" -- the model itself assigns property_category per row, using
-        its own reading of the paper/parameter rather than a fixed lookup.
-    """
-    if categorize_mode == "llm":
-        category_field, category_rule = _CATEGORY_FIELD, _CATEGORY_RULE
-    elif categorize_mode == "symbolic":
-        category_field, category_rule = "", ""
-    else:
-        raise ValueError(f"categorize_mode must be 'symbolic' or 'llm', got {categorize_mode!r}")
-    return PROMPT_TEMPLATE.format(
-        schema=schema, paper_text=paper_text,
-        category_field=category_field, category_rule=category_rule,
-    )
+def build_prompt(schema, paper_text):
+    return PROMPT_TEMPLATE.format(schema=schema, paper_text=paper_text)
 
 
 # ---------- 3. Call the LLM (OpenAI, GPT-5-mini) ----------
@@ -124,6 +100,48 @@ def call_gpt_mini(prompt: str, model: str = "gpt-5-mini") -> str:
         # The SDK automatically retries rate limits and connection errors
         print(f"An API error occurred: {e}")
         raise
+
+
+def call_gpt_mini_tool(prompt: str, tool_name: str, tool_description: str,
+                        parameters_schema: dict, model: str = "gpt-5-mini") -> dict:
+    """
+    Forces the model to respond via a single structured tool call instead of
+    free-text JSON. Returns the parsed `arguments` dict directly — no
+    ```json fences, no retry-on-malformed-JSON loop needed, since the
+    Responses API enforces `parameters_schema` (strict mode) on the way out.
+
+    tool_name / tool_description / parameters_schema define the ONE tool the
+    model is allowed to call; tool_choice forces it to call that tool rather
+    than reply with prose.
+    """
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
+    tool = {
+        "type": "function",
+        "name": tool_name,
+        "description": tool_description,
+        "parameters": parameters_schema,
+        "strict": True,
+    }
+
+    try:
+        response = client.responses.create(
+            model=model,
+            input=prompt,
+            tools=[tool],
+            tool_choice={"type": "function", "name": tool_name},
+        )
+    except Exception as e:
+        print(f"An API error occurred: {e}")
+        raise
+
+    for item in response.output:
+        if getattr(item, "type", None) == "function_call" and item.name == tool_name:
+            return json.loads(item.arguments)
+
+    raise ValueError(
+        f"Model did not return a '{tool_name}' tool call. Raw output: {response.output!r}"
+    )
 
 
 # ---------- 4. Parse response ----------
@@ -195,9 +213,19 @@ def verify_parameters(extracted_parameters, paper_text, known_materials,
             # Review mode: table cells are legit. Accept if value appears in
             # the paper AND either (a) parameter name appears in the quote or
             # context, or (b) row is cited-secondary with an explicit source.
+            #
+            # BUG FIX: matching the FULL taxonomy parameter name (e.g.
+            # "Tm (\u00b0C)") against the quote almost always fails — real prose
+            # writes "Tm = 150\u2013170 \u00b0C", never "Tm (\u00b0C)" with the unit
+            # literally parenthesized right after the name. Strip the
+            # trailing "(...)" unit annotation before matching, so "Tm" is
+            # checked instead of "Tm (\u00b0C)".
+            bare_parameter = re.sub(r"\s*\([^)]*\)\s*$", "", parameter).strip().lower()
             param_nearby = (
-                (bool(quote) and parameter.lower() in quote.lower()) or
-                (bool(context) and parameter.lower() in context.lower())
+                (bool(quote) and (parameter.lower() in quote.lower() or
+                                   (bare_parameter and bare_parameter in quote.lower()))) or
+                (bool(context) and (parameter.lower() in context.lower() or
+                                     (bare_parameter and bare_parameter in context.lower())))
             )
             cited = bool(provenance.get("cited_work") or provenance.get("citation_marker"))
             structural_ok = bool(quote.strip()) or bool(context.strip())
@@ -213,8 +241,21 @@ def verify_parameters(extracted_parameters, paper_text, known_materials,
             # Primary mode: strict — value must appear in quote, quote must
             # appear in paper, material (if tagged) must be confirmed.
             quote_ok = _quote_in_paper(quote, paper_text)
-            material_ok = (not material) or (material in known_materials)
+
+            # Symbolic single-material fallback (no LLM call): if the paper
+            # only has one verified material, any object/part the row names
+            # (e.g. "3D-printed chains") is necessarily made of that material
+            # — there's no real ambiguity to verify, so an exact-string
+            # mismatch here is a naming difference, not an unconfirmed claim.
+            single_material_fallback = len(known_materials) == 1 and bool(material) and material not in known_materials
+            material_ok = (not material) or (material in known_materials) or single_material_fallback
+
             row["verified"] = value_in_quote and quote_ok and material_ok
+            if row["verified"] and single_material_fallback:
+                row["material_note"] = (
+                    f"material tag '{material}' auto-attributed to sole paper material "
+                    f"'{next(iter(known_materials))}'"
+                )
             if not row["verified"]:
                 if not value_in_quote:
                     row["flag_reason"] = "value not in quote"
@@ -228,14 +269,9 @@ def verify_parameters(extracted_parameters, paper_text, known_materials,
 
 
 # ---------- 6. Full pipeline ----------
-def run_pipeline(paper_text, flat_json_path="vocab_flat.json", model="gpt-5-mini",
-                  categorize_mode="symbolic", taxonomy_path="am_taxonomy_v4.html"):
-    """categorize_mode: "symbolic" (default, param_category.py + taxonomy HTML
-    lookup, no extra LLM cost) or "llm" (the extraction call itself assigns
-    property_category per row). Either way every verified row ends up with a
-    property_category field; only where that tag comes from changes."""
+def run_pipeline(paper_text, flat_json_path="vocab_flat.json", model="gpt-5-mini"):
     schema = load_schema(flat_json_path)
-    prompt = build_prompt(schema, paper_text, categorize_mode=categorize_mode)
+    prompt = build_prompt(schema, paper_text)
     raw = call_gpt_mini(prompt, model=model)
     parsed = parse_response(raw)
 
@@ -254,17 +290,6 @@ def run_pipeline(paper_text, flat_json_path="vocab_flat.json", model="gpt-5-mini
     except ImportError:
         pass  # si_units.py not present — extraction still works, just unnormalized
 
-    # Property-category tagging (mechanical/physical/thermal/microstructural/
-    # electrical). If categorize_mode="llm", the model already put
-    # property_category on each row above — leave those alone. If "symbolic"
-    # (default), tag them now via the taxonomy-HTML lookup, no LLM call.
-    if categorize_mode == "symbolic":
-        try:
-            from param_category import tag_rows
-            param_verified = tag_rows(param_verified, taxonomy_path=taxonomy_path)
-        except ImportError:
-            pass  # param_category.py not present — rows just lack the tag
-
     result = {
         "materials": {"verified": mat_verified, "flagged": mat_flagged},
         "parameters": {"verified": param_verified, "flagged": param_flagged},
@@ -276,31 +301,8 @@ def run_pipeline(paper_text, flat_json_path="vocab_flat.json", model="gpt-5-mini
 
 
 if __name__ == "__main__":
-    import argparse
-
-    ap = argparse.ArgumentParser(description="Run the AM extraction pipeline.")
-    ap.add_argument("paper_path", nargs="?", default=None,
-                     help="Path to a .txt file with the paper text. Omit to use the built-in sample paper.")
-    ap.add_argument("--categorize-mode", choices=["symbolic", "llm"], default="symbolic",
-                     help="How property_category is assigned (default: symbolic).")
-    ap.add_argument("--vocab", default="vocab_flat.json", help="Path to flat taxonomy JSON.")
-    ap.add_argument("--taxonomy-html", default="am_taxonomy_v4.html",
-                     help="Path to am_taxonomy_v4.html (used by symbolic mode).")
-    ap.add_argument("--model", default="gpt-5-mini")
-    args = ap.parse_args()
-
-    if args.paper_path:
-        paper_text = open(args.paper_path, encoding="utf-8").read()
-    else:
-        paper_text = """
-        The LPBF process was run with laser power of 195 W and a scan speed
-        of 1100 mm/s. The powder had a D50 of 32 microns.
-        """
-
-    run_pipeline(
-        paper_text,
-        flat_json_path=args.vocab,
-        model=args.model,
-        categorize_mode=args.categorize_mode,
-        taxonomy_path=args.taxonomy_html,
-    )
+    sample_paper = """
+    The LPBF process was run with laser power of 195 W and a scan speed
+    of 1100 mm/s. The powder had a D50 of 32 microns.
+    """
+    run_pipeline(sample_paper)

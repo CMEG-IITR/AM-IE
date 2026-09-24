@@ -6,8 +6,10 @@ BEFORE running the full taxonomy-driven extraction. This lets you narrow
 which part of the taxonomy to send in the detailed pass (see llm_pipeline.py),
 instead of always sending all ~373 parameters across all 8 AM categories.
 
-Output is small and cheap: process category, materials mentioned, and which
-taxonomy sections are even worth checking.
+Triage answers exactly three questions: which material is being processed,
+by which process, and which sections are worth reading for parameter values.
+Material/process come from abstract+intro+Materials/Methods; section relevance comes from a
+compact listing of every section (see run_triage).
 """
 import json
 import re
@@ -202,15 +204,18 @@ def detect_source_kind(raw_markup):
     return "research-article"
 
 
-# ---------- 2. Triage prompt (small, cheap) ----------
-TRIAGE_PROMPT = """You are scanning an additive manufacturing (AM) research paper to identify
-its basic contents. Do NOT extract detailed parameter values yet — this is
-only a quick triage pass.
+# ---------- 2. Triage prompts (two narrow passes, both small) ----------
+# Triage produces exactly three things:
+#   (1) which material is being processed   -> printed_materials[].material
+#   (2) by which process                    -> printed_materials[].process_category/_subtype
+#   (3) which sections to read for values   -> relevant_sections
+#
+# (1)+(2) are stated in the abstract/intro of a primary paper, so pass 1 sees
+# ONLY the opening text. (3) needs to know every section exists, but only needs
+# a name + a snippet + a cheap "does this look numeric" hint, so pass 2 sees a
+# compact section listing instead of a 1500-char-per-section dump.
 
-The paper's actual sections (detected from markup) are listed below as
-[SECTION: <name>] markers, so you know the real section names to use.
-
-AM process category codes and what techniques they cover — use this to map
+AM_CATEGORY_LEGEND = """AM process category codes and what techniques they cover — use this to map
 any technique name mentioned in the paper to the correct code:
   VPP = Vat Photopolymerization: stereolithography (SLA), DLP, CLIP, two-photon
         polymerization (2PP), masked SLA (MSLA/LCD) — resin cured by light
@@ -224,74 +229,101 @@ any technique name mentioned in the paper to the correct code:
         above (e.g. a truly novel/hybrid process), NOT as a default when you're
         merely unsure which of the above it is — re-read the technique name
         against this list first before choosing OTHER.
+"""
 
-You MUST return a single JSON object with EXACTLY these six keys — no more,
-no fewer, no other shape:
+IDENTIFY_PROMPT = (
+    """You are reading the abstract, introduction and Materials/Methods text of an
+additive manufacturing (AM) research paper to identify what was printed and how.
+Do NOT extract process parameter values — identification only.
+
+""" + AM_CATEGORY_LEGEND + """
+Return a single JSON object with EXACTLY one key:
 
 {{
-  "process_categories": ["<AM category codes present, from: BJT, DED, MEX, MJT, PBF, SHL, VPP, OTHER>"],
-  "process_subtypes": ["<specific techniques mentioned, e.g. LPBF, FDM, DED-Wire>"],
   "printed_materials": [
     {{
-      "material": "<exact name of a material actually FED INTO THE PRINTER as feedstock, e.g. 'Clear IV resin', 'Ti-6Al-4V powder'>",
+      "material": "<the material actually FED INTO THE PRINTER as feedstock, with its FULL composition exactly as the paper states it: base material plus any dopants, fillers, loadings, ratios or additives, e.g. 'Ti-6Al-4V powder', 'ZnO doped with 0.04 wt% Al', 'photopolymer resin loaded with 5 wt% graphene'>",
       "process_category": "<the category code (from the list above) that processes THIS material>",
       "process_subtype": "<the specific technique that processes THIS material, e.g. 'stereolithography'>"
     }}
-  ],
-  "materials_mentioned": ["<every OTHER material/chemical name as it appears in the text — reagents, solvents, post-processing/functionalization chemicals, analytes, etc. Do NOT repeat entries already listed in printed_materials.>"],
-  "relevant_sections": ["<exact section names from the [SECTION: ...] markers that likely contain extractable parameter values, e.g. Methods, Materials, Results>"],
-  "likely_relevant_taxonomy_sections": ["<AM taxonomy section names ONLY, in the exact 'Process Parameters — <subtype>' or 'Feedstock Properties — <material type>' format, e.g. 'Process Parameters — VAT-SLA', 'Feedstock Properties — Resin'. Do NOT use broad subject labels like 'Materials Science' or 'Chemistry' — those are not taxonomy sections.>"]
+  ]
 }}
 
-CRITICAL — "printed_materials" is the FIXED, PINNED material this paper is
-actually about, paired with the exact process that made it. Follow these
-rules strictly:
+Rules:
+  - Composition matters: if the paper gives a dopant, filler, weight/volume/mole
+    fraction, or mixing ratio for the feedstock, include it in "material" with
+    the number and unit as written. Do not round, guess, or add composition
+    the paper does not state.
   - List the BUILD MATERIAL only — the thing physically fed into the 3D
     printer (resin/powder/filament/wire/paste/etc). This is almost always
     ONE material. List a SECOND entry ONLY if the paper genuinely compares
     two distinct build materials/processes (e.g. two different resins each
     printed on their own). Never list more than 2.
-  - Do NOT put reagents, solvents, catalysts, post-print functionalization
+  - Do NOT list reagents, solvents, catalysts, post-print functionalization
     chemicals, analytes, or anything used in a downstream chemistry/testing
-    step into "printed_materials" — those belong in "materials_mentioned"
-    instead, even if they're mentioned prominently. Ask yourself: "did this
-    go INTO the printer?" If no, it's not a printed_material.
-  - Each entry's "process_category"/"process_subtype" describe HOW THAT
-    SPECIFIC MATERIAL was processed — not a generic list for the whole
-    paper. If the paper only has one build material, printed_materials will
-    have exactly one entry.
-  - If you cannot identify any material that was actually printed (e.g. the
-    paper is a pure literature review with no build material of its own),
-    return an empty list for "printed_materials" — do not force an entry.
-
-Include a section in "relevant_sections" if it plausibly contains AM
-parameters OR generic AM knowledge. This includes:
-  - Sections with printer/resin/feedstock identifications (often called
-    "Instruments", "Equipment", "Materials", "Chemicals and reagents",
-    "Experimental", "Methods").
-  - Sections with general process discussion (e.g. "Materials and printing
-    processes", "3D printing technologies", "Materials for AM").
-  - Sections with comparison tables (e.g. "3D printing technologies and
-    materials", "Technologies and materials for ...").
-  - Sections reporting the paper's own experiments.
-  - For REVIEW articles: sections summarizing parameters reported by other
-    papers are relevant. Include them.
-Skip only References, Acknowledgements, Declarations, and pure-background
-sections with no parameter-like content.
+    step. Ask yourself: "did this go INTO the printer?" If no, leave it out.
+  - Each entry's process_category/process_subtype describe HOW THAT SPECIFIC
+    MATERIAL was processed.
+  - If you cannot identify any material that was actually printed (e.g. a pure
+    literature review with no build material of its own), return an empty
+    list — do not force an entry.
 
 PAPER TEXT:
-{paper_text}
+{front_text}
 
-REMINDER: your entire response must be exactly one JSON object with these six
-keys: process_categories, process_subtypes, printed_materials,
-materials_mentioned, relevant_sections, likely_relevant_taxonomy_sections.
-Do not return anything else, do not return a subset of these keys, do not
-summarize the text instead. Remember: printed_materials is the FIXED build
-material(s) only (1-2 max) — everything else goes in materials_mentioned.
+REMINDER: respond with exactly one JSON object with the single key
+"printed_materials" (1-2 entries max, or an empty list). Nothing else.
+"""
+)
+
+IDENTIFY_RETRY_NOTE = (
+    "\n\nYour previous response was invalid. Respond with ONLY a JSON object "
+    "with the single key \"printed_materials\": a list of AT MOST 2 objects, each "
+    "with exactly the keys \"material\", \"process_category\", \"process_subtype\". "
+    "\"process_category\" MUST be one of BJT, DED, MEX, MJT, PBF, SHL, VPP, OTHER "
+    "(or an empty string if unknown) — not a free-text description. Use an empty "
+    "list if no build material can be identified."
+)
+
+SECTION_PROMPT = """You are helping decide which sections of an additive manufacturing (AM) paper
+should be read to extract experimental parameter values (laser power, layer
+thickness, temperatures, particle sizes, mechanical properties, etc.).
+
+Each section is listed as [SECTION: <name>], followed by an optional hint
+(how many numeric values with units and how many tables it contains) and the
+first few words of its text.
+
+Return a single JSON object with EXACTLY one key:
+
+{{
+  "relevant_sections": ["<exact section names copied from the [SECTION: ...] markers>"]
+}}
+
+Include a section if it plausibly contains AM parameters OR generic AM knowledge:
+  - Printer / resin / feedstock identification (often "Instruments", "Equipment",
+    "Materials", "Chemicals and reagents", "Experimental", "Methods").
+  - General process discussion or comparison tables (e.g. "Materials and printing
+    processes", "3D printing technologies and materials").
+  - Sections reporting the paper's own experiments and results.
+  - For REVIEW articles: sections summarizing parameters reported by other papers.
+A hint showing many numeric values or tables is a strong sign of relevance.
+Skip pure-background sections with no parameter-like content.
+
+SECTIONS:
+{section_listing}
+
+REMINDER: respond with exactly one JSON object with the single key
+"relevant_sections". Copy section names exactly. Nothing else.
 """
 
+SECTION_RETRY_NOTE = (
+    "\n\nYour previous response was invalid. Respond with ONLY a JSON object with "
+    "the single key \"relevant_sections\": a list of section-name strings copied "
+    "exactly from the [SECTION: ...] markers."
+)
+
 # Sections that carry no classification signal and only add noise/token bloat —
-# skipped entirely when building the triage prompt. Matched as a substring against
+# skipped entirely when building triage prompts. Matched as a substring against
 # the (lowercased) section name, so it catches variants like "Declaration of
 # competing interest" / "Declaration of generative AI...".
 NOISE_SECTION_KEYWORDS = [
@@ -305,28 +337,85 @@ def _is_noise_section(name):
     return any(kw in name_lower for kw in NOISE_SECTION_KEYWORDS)
 
 
-def build_triage_prompt(sectioned_text, max_chars_per_section=1500, max_sections=15):
-    """sectioned_text: dict of {section_name: text}, as returned by strip_markup_sectioned.
-    Truncates each section for the triage pass — it only needs enough text to
-    classify materials/process/relevance, not the full body (that's stage 2's job).
-    Boilerplate sections (references, acknowledgements, etc.) are skipped entirely —
-    they add token bloat and noise without helping classification, and on smaller
-    local models can crowd out the actual instructions. Total section count is also
-    capped as a second safeguard against prompt bloat on papers with many sections."""
+# ---- pass-1 input: abstract + introduction only ----
+METHODS_SECTION_HINTS = ("method", "material", "experiment", "instrument",
+                         "equipment", "printing", "fabrication")
+
+def build_front_text(sectioned, max_abstract=3000, max_intro=3000, max_fallback=1500):
+    """Abstract + introduction text for material/process identification. If
+    neither heading exists, falls back to front-matter ('body') plus the first
+    couple of real sections. Plain-text input (only a 'body' bucket) just uses
+    the start of that text."""
+    real = {k: v for k, v in sectioned.items() if k != "body"}
+    if not real:
+        return sectioned.get("body", "")[: max_abstract + max_intro]
+
+    parts, found = [], False
+    for name, text in real.items():
+        n = _normalize_section_name(name)
+        if "abstract" in n and not _is_noise_section(name):
+            parts.append(f"[ABSTRACT]\n{text[:max_abstract]}")
+            found = True
+        elif n.startswith("introduction") or n == "background":
+            parts.append(f"[INTRODUCTION]\n{text[:max_intro]}")
+            found = True
+
+    if not found:
+        body = sectioned.get("body", "")
+        if body:
+            parts.append(f"[FRONT MATTER]\n{body[:max_fallback]}")
+        taken = 0
+        for name, text in real.items():
+            if _is_noise_section(name):
+                continue
+            parts.append(f"[SECTION: {name}]\n{text[:max_fallback]}")
+            taken += 1
+            if taken >= 2:
+                break
+    return "\n\n".join(parts)
+
+
+def build_methods_text(sectioned, max_chars=1500, max_sections=3):
+    """Used only when the opening text yielded no printed material: the first
+    few Methods/Materials-style sections, truncated."""
     parts = []
-    included = 0
-    for name, text in sectioned_text.items():
-        if _is_noise_section(name):
+    for name, text in sectioned.items():
+        if name == "body" or _is_noise_section(name):
             continue
-        if included >= max_sections:
-            break
-        snippet = text[:max_chars_per_section]
-        if len(text) > max_chars_per_section:
-            snippet += " ...[truncated]"
-        parts.append(f"[SECTION: {name}]\n{snippet}")
-        included += 1
-    labeled = "\n\n".join(parts)
-    return TRIAGE_PROMPT.format(paper_text=labeled)
+        if any(h in name.lower() for h in METHODS_SECTION_HINTS):
+            parts.append(f"[SECTION: {name}]\n{text[:max_chars]}")
+            if len(parts) >= max_sections:
+                break
+    return "\n\n".join(parts)
+
+
+# ---- pass-2 input: compact section listing ----
+UNIT_VALUE_RE = re.compile(
+    r"\d+(?:\.\d+)?\s?(?:W|mm/s|m/s|[\u00b5\u03bcu]m|nm|mm|\u00b0C|MPa|GPa|J/mm3|kV|mA|rpm|min|h|s|%)(?![A-Za-z])"
+)
+
+def _section_hint(text):
+    """Cheap symbolic signal so the LLM doesn't have to read a section to know
+    it's number-dense: count of 'value + unit' matches and of table blocks."""
+    n_vals = len(UNIT_VALUE_RE.findall(text))
+    n_tables = text.count("[TABLE")
+    bits = []
+    if n_vals:
+        bits.append(f"~{n_vals} numeric values w/ units")
+    if n_tables:
+        bits.append(f"{n_tables} table(s)")
+    return f" ({', '.join(bits)})" if bits else ""
+
+
+def build_section_listing(sectioned, snippet_chars=200, max_sections=60):
+    items = [(n, t) for n, t in sectioned.items() if n != "body" and not _is_noise_section(n)]
+    if len(items) > 40:
+        snippet_chars = 80  # keep the listing small on papers with many headings
+    lines = []
+    for name, text in items[:max_sections]:
+        snippet = re.sub(r"\s+", " ", text[:snippet_chars]).strip()
+        lines.append(f"[SECTION: {name}]{_section_hint(text)} {snippet}...")
+    return "\n".join(lines)
 
 
 def _is_hollow(row):
@@ -377,13 +466,99 @@ def _call_llm_gpt5mini(prompt, model="gpt-5-mini"):
     return call_gpt_mini(prompt, model=model)
 
 
-def call_llm(prompt, model="llama3.1", host="http://localhost:11434", backend="ollama"):
-    """backend: "ollama" (default — local server, unchanged behavior) or
-    "gpt5mini" (routes to llm_pipeline.call_gpt_mini; ignores `host`).
+VALID_CATEGORY_CODES = {"BJT", "DED", "MEX", "MJT", "PBF", "SHL", "VPP", "OTHER"}
+
+
+# ---------- Tool-calling schemas for the gpt5mini backend ----------
+# These mirror IDENTIFY_PROMPT / SECTION_PROMPT's JSON shapes exactly, but as
+# an enforced (strict-mode) function-call schema instead of free text the
+# model might wrap in prose or ```json fences. This is what makes triage
+# "tool callable": each pass is one forced call to one named tool, and the
+# return value is already a validated dict — no parse_response/_valid_*
+# round-trip needed for this backend.
+PRINTED_MATERIALS_TOOL = {
+    "name": "submit_printed_materials",
+    "description": (
+        "Submit the build material(s) identified as physically fed into the "
+        "3D printer, and the AM process category/subtype used for each."
+    ),
+    "schema": {
+        "type": "object",
+        "properties": {
+            "printed_materials": {
+                "type": "array",
+                "maxItems": 2,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "material": {
+                            "type": "string",
+                            "description": "Full composition as stated: base material plus any "
+                                           "dopants/fillers/ratios, e.g. 'Ti-6Al-4V powder'.",
+                        },
+                        "process_category": {
+                            "type": "string",
+                            "enum": sorted(VALID_CATEGORY_CODES) + [""],
+                        },
+                        "process_subtype": {
+                            "type": "string",
+                            "description": "Specific technique name, e.g. 'stereolithography'.",
+                        },
+                    },
+                    "required": ["material", "process_category", "process_subtype"],
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "required": ["printed_materials"],
+        "additionalProperties": False,
+    },
+}
+
+RELEVANT_SECTIONS_TOOL = {
+    "name": "submit_relevant_sections",
+    "description": "Submit the exact section names worth reading for AM process parameter values.",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "relevant_sections": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Section names copied exactly from the [SECTION: ...] markers.",
+            }
+        },
+        "required": ["relevant_sections"],
+        "additionalProperties": False,
+    },
+}
+
+
+def _call_tool_and_validate(prompt, tool, validate, model="gpt-5-mini"):
+    """One tool call + one retry (in case the model returns an empty/degenerate
+    but schema-valid shape, e.g. VALID_CATEGORY_CODES rejects nothing since
+    the enum already constrains it — this just guards transient API hiccups)."""
+    from llm_pipeline import call_gpt_mini_tool
+    for attempt in range(2):
+        try:
+            parsed = call_gpt_mini_tool(
+                prompt, tool["name"], tool["description"], tool["schema"], model=model
+            )
+        except (ValueError, json.JSONDecodeError) as e:
+            print(f"Warning: tool call attempt {attempt + 1} failed ({e}).")
+            continue
+        if validate(parsed):
+            return parsed
+        print("Warning: tool call response failed schema validation.")
+    return None
+
+
+def call_llm(prompt, model="gpt-5-mini", host="http://localhost:11434", backend="gpt5mini"):
+    """backend: "gpt5mini" (default — routes to llm_pipeline.call_gpt_mini;
+    ignores `host`) or "ollama" (local server, opt-in).
     `model` should be the model name appropriate to whichever backend is
-    selected (e.g. "llama3.1" for ollama, "gpt-5-mini" for gpt5mini) —
+    selected (e.g. "gpt-5-mini" for gpt5mini, "llama3.1" for ollama) —
     callers that only flip `backend` without changing `model` get the
-    default "llama3.1" sent to GPT-5-mini's endpoint, so pass both together."""
+    default "gpt-5-mini" sent to Ollama's endpoint, so pass both together."""
     if backend == "gpt5mini":
         return _call_llm_gpt5mini(prompt, model=model)
     elif backend == "ollama":
@@ -404,29 +579,13 @@ def parse_response(raw_text):
     return _normalize_keys(json.loads(cleaned))
 
 
-# ---------- 4. Full triage pipeline ----------
-REQUIRED_TRIAGE_KEYS = {
-    "process_categories", "process_subtypes", "printed_materials",
-    "materials_mentioned", "relevant_sections", "likely_relevant_taxonomy_sections",
-}
-
-VALID_CATEGORY_CODES = {"BJT", "DED", "MEX", "MJT", "PBF", "SHL", "VPP", "OTHER"}
-
-
-def _validate_triage_schema(triage):
-    """Returns True only if the parsed response has all required keys AND
-    process_categories contains only real taxonomy codes (not free-text guesses
-    like 'Synthesis' or '3D Printing') AND printed_materials is a well-formed
-    list of {material, process_category, process_subtype} dicts (empty list
-    is fine — a review paper may genuinely have no build material)."""
-    if not (isinstance(triage, dict) and REQUIRED_TRIAGE_KEYS.issubset(triage.keys())):
+# ---------- 4. Validation + the two triage passes ----------
+def _valid_printed(parsed):
+    """{"printed_materials": [<=2 dicts with material/process_category/process_subtype]}.
+    An empty list is valid — a review may genuinely have no build material."""
+    if not isinstance(parsed, dict) or "printed_materials" not in parsed:
         return False
-    categories = triage.get("process_categories", [])
-    if not isinstance(categories, list):
-        return False
-    if not all(c in VALID_CATEGORY_CODES for c in categories):
-        return False
-    printed = triage.get("printed_materials", [])
+    printed = parsed["printed_materials"]
     if not isinstance(printed, list) or len(printed) > 2:
         return False
     for entry in printed:
@@ -437,6 +596,74 @@ def _validate_triage_schema(triage):
         if entry["process_category"] and entry["process_category"] not in VALID_CATEGORY_CODES:
             return False
     return True
+
+
+def _valid_sections(parsed):
+    return (isinstance(parsed, dict)
+            and isinstance(parsed.get("relevant_sections"), list)
+            and all(isinstance(s, str) for s in parsed["relevant_sections"]))
+
+
+def _call_and_validate(prompt, validate, retry_note, **llm_kwargs):
+    """One call + one retry. Returns the parsed dict, or None if both attempts
+    fail to parse/validate."""
+    for attempt in range(2):
+        p = prompt if attempt == 0 else prompt + retry_note
+        try:
+            parsed = parse_response(call_llm(p, **llm_kwargs))
+        except json.JSONDecodeError as e:
+            print(f"Warning: triage response was not valid JSON ({e}).")
+            continue
+        if validate(parsed):
+            return parsed
+        print("Warning: triage response failed schema validation.")
+    return None
+
+
+def identify_material_process(sectioned, source_kind="research-article",
+                              model="gpt-5-mini", host="http://localhost:11434",
+                              backend="gpt5mini"):
+    """Pass 1 — outputs (1) and (2): which material, by which process.
+    Sees abstract + introduction + the first few Materials/Methods sections
+    (truncated). Returns a list of 0-2 {material, process_category, process_subtype}.
+
+    On the gpt5mini backend this is a forced tool call (submit_printed_materials)
+    instead of a free-text-JSON-then-parse round trip."""
+    # Abstract/intro name the material and process; the exact composition
+    # (dopant %, filler loading, ratios) is usually only in Materials/Methods.
+    text = build_front_text(sectioned)
+    methods = build_methods_text(sectioned, max_chars=2500)
+    if methods:
+        text += "\n\n" + methods
+    prompt = IDENTIFY_PROMPT.format(front_text=text)
+
+    if backend == "gpt5mini":
+        result = _call_tool_and_validate(prompt, PRINTED_MATERIALS_TOOL, _valid_printed, model=model)
+    else:
+        result = _call_and_validate(prompt, _valid_printed, IDENTIFY_RETRY_NOTE,
+                                    model=model, host=host, backend=backend)
+    return result["printed_materials"] if result else []
+
+
+def score_section_relevance(sectioned, model="gpt-5-mini", host="http://localhost:11434",
+                            backend="gpt5mini"):
+    """Pass 2 — output (3): which sections to read for parameter values.
+    Sees every non-noise section as name + numeric-density hint + short snippet.
+    Returns a list of section names ([] on failure — get_relevant_text() then
+    falls back to all non-'body' sections).
+
+    On the gpt5mini backend this is a forced tool call (submit_relevant_sections)."""
+    listing = build_section_listing(sectioned)
+    if not listing:
+        return []
+    prompt = SECTION_PROMPT.format(section_listing=listing)
+
+    if backend == "gpt5mini":
+        result = _call_tool_and_validate(prompt, RELEVANT_SECTIONS_TOOL, _valid_sections, model=model)
+    else:
+        result = _call_and_validate(prompt, _valid_sections, SECTION_RETRY_NOTE,
+                                    model=model, host=host, backend=backend)
+    return result["relevant_sections"] if result else []
 
 
 # ---------- Keyword-based category detection (no LLM — deterministic safety net) ----------
@@ -530,68 +757,70 @@ def detect_categories_by_keyword(text):
     return found
 
 
-def run_triage(raw_markup_or_text, is_markup=True, model="llama3.1",
-                host="http://localhost:11434", backend="ollama"):
-    """backend: "ollama" (default, local llama3.1 — unchanged) or "gpt5mini"
-    (routes triage through GPT-5-mini via llm_pipeline.call_gpt_mini instead,
-    no local Ollama server needed). If backend="gpt5mini" and `model` is
-    left at its default, it's swapped to "gpt-5-mini" automatically so
-    callers don't have to pass both just to flip the backend."""
-    if backend == "gpt5mini" and model == "llama3.1":
-        model = "gpt-5-mini"
+def _dedupe(seq):
+    seen, out = set(), []
+    for x in seq:
+        if x and x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
+def run_triage(raw_markup_or_text, is_markup=True, model="gpt-5-mini",
+                host="http://localhost:11434", backend="gpt5mini"):
+    """Returns (triage, sectioned). triage contains:
+
+      printed_materials  [{material, process_category, process_subtype}]  (LLM pass 1)
+      relevant_sections  [section names]                                  (LLM pass 2)
+      process_categories derived: printed_materials' categories + keyword net
+      process_subtypes   derived: printed_materials' process_subtype values
+      _source_kind       'review' | 'research-article'
+
+    process_categories / process_subtypes are NOT asked of the LLM — they're
+    derived so downstream code (agentic_pipeline's dispatch and its review
+    fallback) keeps working with the same keys.
+
+    backend: "gpt5mini" (default — tool-calling, no local Ollama needed) or
+    "ollama" (local llama3.1, opt-in, free-text-JSON parsing as before). If
+    backend="ollama" and `model` is left at its default, it's swapped to
+    "llama3.1" automatically."""
+    if backend not in ("ollama", "gpt5mini"):
+        raise ValueError(f"backend must be 'ollama' or 'gpt5mini', got {backend!r}")
+    if backend == "ollama" and model == "gpt-5-mini":
+        model = "llama3.1"
 
     sectioned = strip_markup_sectioned(raw_markup_or_text) if is_markup else {"body": raw_markup_or_text}
-    prompt = build_triage_prompt(sectioned)
+    source_kind = detect_source_kind(raw_markup_or_text) if is_markup else "research-article"
+    print(f"Note: source kind = {source_kind}")
 
-    raw = call_llm(prompt, model=model, host=host, backend=backend)
-    triage = parse_response(raw)
+    llm = dict(model=model, host=host, backend=backend)
+    printed = identify_material_process(sectioned, source_kind, **llm)
+    relevant = score_section_relevance(sectioned, **llm)
 
-    if not _validate_triage_schema(triage):
-        bad_categories = [c for c in triage.get("process_categories", [])
-                           if c not in VALID_CATEGORY_CODES] if isinstance(triage, dict) else []
-        print(f"Warning: triage response invalid "
-              f"(keys: {list(triage.keys()) if isinstance(triage, dict) else type(triage)}, "
-              f"bad category codes: {bad_categories}). Retrying once...")
-        retry_prompt = prompt + (
-            "\n\nYour previous response was invalid. Requirements you may have missed:\n"
-            f"1. Respond with ONLY the JSON object containing exactly these six keys: "
-            f"{sorted(REQUIRED_TRIAGE_KEYS)}.\n"
-            f"2. \"process_categories\" MUST contain ONLY codes from this exact list: "
-            f"{sorted(VALID_CATEGORY_CODES)} — not free-text descriptions of what the paper "
-            f"does. If the paper's 3D printing process doesn't clearly match one of BJT, DED, "
-            f"MEX, MJT, PBF, SHL, VPP, use \"OTHER\". If unsure, use an empty list rather than "
-            f"inventing a category name.\n"
-            f"3. \"printed_materials\" MUST be a list of AT MOST 2 objects, each with exactly "
-            f"the keys \"material\", \"process_category\", \"process_subtype\" — the build "
-            f"material(s) actually fed into the printer, not reagents or chemicals. Use an "
-            f"empty list if none can be identified."
-        )
-        raw = call_llm(retry_prompt, model=model, host=host, backend=backend)
-        triage = parse_response(raw)
-
-        if not _validate_triage_schema(triage):
-            print("Warning: retry also failed schema validation. Falling back to empty triage "
-                  "(no categories/sections identified — extraction will likely find nothing).")
-            triage = {k: [] for k in REQUIRED_TRIAGE_KEYS}
-
-    # Deterministic keyword safety net: the LLM has repeatedly under-detected
-    # categories even with an explicit legend. Scan the actual paper text (not
-    # the LLM's output) for known technique keywords and add any category the
-    # LLM missed — never remove what the LLM found, only supplement it.
+    # ---- derive process_categories / process_subtypes (no LLM) ----
     full_text = "\n".join(sectioned.values())
-    keyword_categories = detect_categories_by_author_voice(full_text)
-    llm_categories = set(triage.get("process_categories", []))
-    missing = keyword_categories - llm_categories
-    if missing:
-        print(f"Note: keyword scan found technique terms for {sorted(missing)} that the "
-              f"LLM's category list missed — adding to process_categories.")
-        triage["process_categories"] = sorted(llm_categories | keyword_categories)
-        # OTHER is meaningless once a real category is confirmed by keyword evidence
-        if "OTHER" in triage["process_categories"] and len(triage["process_categories"]) > 1:
-            triage["process_categories"].remove("OTHER")
+    categories = {e["process_category"] for e in printed if e.get("process_category")}
+    categories |= detect_categories_by_author_voice(full_text)  # existing safety net
+    if source_kind == "review" or not printed:
+        # Reviews (and papers where nothing was pinned) discuss several
+        # techniques and rarely use first-person "we printed on..." phrasing,
+        # so author-voice alone finds nothing. Fall back to the broader
+        # mention-based keyword scan so category-level extraction still has
+        # categories to dispatch on.
+        kw = detect_categories_by_keyword(full_text)
+        if kw - categories:
+            print(f"Note: keyword scan supplied categories {sorted(kw - categories)}.")
+        categories |= kw
+    if "OTHER" in categories and len(categories) > 1:
+        categories.discard("OTHER")
 
-    triage["_source_kind"] = detect_source_kind(raw_markup_or_text) if is_markup else "research-article"
-    print(f"Note: source kind = {triage['_source_kind']}")
+    triage = {
+        "printed_materials": printed,
+        "relevant_sections": relevant,
+        "process_categories": sorted(categories),
+        "process_subtypes": _dedupe(e.get("process_subtype") for e in printed),
+        "_source_kind": source_kind,
+    }
     json.dump(triage, open("triage_result.json", "w"), indent=2)
     print(json.dumps(triage, indent=2))
     return triage, sectioned
@@ -656,12 +885,12 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Run paper triage.")
     ap.add_argument("paper_path", nargs="?", default=None,
                      help="Path to a paper markup file. Omit to use the built-in sample paper.")
-    ap.add_argument("--backend", choices=["ollama", "gpt5mini"], default="ollama",
-                     help="Which LLM backend runs triage (default: ollama). "
-                          "'gpt5mini' needs no local Ollama server, only OPENAI_API_KEY.")
+    ap.add_argument("--backend", choices=["ollama", "gpt5mini"], default="gpt5mini",
+                     help="Which LLM backend runs triage (default: gpt5mini, tool-calling, "
+                          "needs only OPENAI_API_KEY). 'ollama' uses a local llama3.1 server.")
     ap.add_argument("--model", default=None,
-                     help="Model name for the chosen backend. Defaults to 'llama3.1' for "
-                          "ollama, 'gpt-5-mini' for gpt5mini.")
+                     help="Model name for the chosen backend. Defaults to 'gpt-5-mini' for "
+                          "gpt5mini, 'llama3.1' for ollama.")
     ap.add_argument("--host", default="http://localhost:11434",
                      help="Ollama server URL (ignored for --backend gpt5mini).")
     args = ap.parse_args()
@@ -684,8 +913,8 @@ if __name__ == "__main__":
         </body></html>
         """
 
-    model = args.model or ("gpt-5-mini" if args.backend == "gpt5mini" else "llama3.1")
+    model = args.model or ("llama3.1" if args.backend == "ollama" else "gpt-5-mini")
     triage, sectioned = run_triage(sample_markup, model=model, host=args.host, backend=args.backend)
     relevant_text = get_relevant_text(triage, sectioned)
     print("\n--- TEXT TO SEND TO STAGE-2 EXTRACTOR ---")
-    print(relevant_text[:2000], "..." if len(relevant_text) > 2000 else "")
+    print(relevant_text[:2000], "..." if len(relevant_text) > 2000 else "") 
