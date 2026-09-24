@@ -75,10 +75,38 @@ def build_prompt(schema, paper_text):
 # (triage_pipeline.py) keeps its own separate call_llm() targeting Ollama
 # llama3.1 — that one is untouched and lives in that file, not here.
 import os
+import time
 from openai import OpenAI
 
+# Every call below appends one dict here (tokens + wall time). Lets you compare
+# pipelines on real cost/latency: clear it, run something, read it.
+#   llm_pipeline.USAGE_LOG.clear(); ...run...; summarize_usage(llm_pipeline.USAGE_LOG)
+USAGE_LOG = []
 
-def call_gpt_mini(prompt: str, model: str = "gpt-5-mini") -> str:
+
+def _usage_from_response(response, seconds, fn):
+    """Best-effort extraction of token counts from a Responses API result."""
+    u = getattr(response, "usage", None)
+    out_d = getattr(u, "output_tokens_details", None)
+    in_d = getattr(u, "input_tokens_details", None)
+    return {
+        "fn": fn,
+        "input_tokens": getattr(u, "input_tokens", 0) or 0,
+        "output_tokens": getattr(u, "output_tokens", 0) or 0,
+        "reasoning_tokens": getattr(out_d, "reasoning_tokens", 0) or 0,
+        "cached_tokens": getattr(in_d, "cached_tokens", 0) or 0,
+        "seconds": round(seconds, 3),
+    }
+
+
+def summarize_usage(log):
+    keys = ("input_tokens", "output_tokens", "reasoning_tokens", "cached_tokens", "seconds")
+    tot = {k: sum(e.get(k, 0) for e in log) for k in keys}
+    tot["calls"] = len(log)
+    return tot
+
+
+def call_gpt_mini(prompt: str, model: str = "gpt-5-mini", reasoning_effort=None) -> str:
     """
     Calls the OpenAI API using the GPT-5-mini model.
     Requires the OPENAI_API_KEY environment variable to be set (e.g. via
@@ -87,13 +115,19 @@ def call_gpt_mini(prompt: str, model: str = "gpt-5-mini") -> str:
     """
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
+    kwargs = {}
+    if reasoning_effort:   # "minimal" | "low" | "medium" | "high"; unset = model default
+        kwargs["reasoning"] = {"effort": reasoning_effort}
     try:
+        t0 = time.time()
         response = client.responses.create(
             model=model,
             input=prompt,
             # To enforce your JSON structure, add a 'text' parameter:
             # text={"format": {"type": "json_schema", "name": "extraction", "schema": YOUR_SCHEMA}},
+            **kwargs,
         )
+        USAGE_LOG.append(_usage_from_response(response, time.time() - t0, "call_gpt_mini"))
         return response.output_text
 
     except Exception as e:
@@ -139,6 +173,49 @@ def call_gpt_mini_tool(prompt: str, tool_name: str, tool_description: str,
         if getattr(item, "type", None) == "function_call" and item.name == tool_name:
             return json.loads(item.arguments)
 
+    raise ValueError(
+        f"Model did not return a '{tool_name}' tool call. Raw output: {response.output!r}"
+    )
+
+
+def call_gpt_mini_tool_ex(prompt: str, tool_name: str, tool_description: str,
+                          parameters_schema: dict, model: str = "gpt-5-mini",
+                          reasoning_effort=None, max_output_tokens=None):
+    """Same forced strict tool call as call_gpt_mini_tool, but returns
+    (arguments_dict, usage_dict) and accepts reasoning_effort / max_output_tokens.
+    Used by the lean harness in agentic_pipeline.py. call_gpt_mini_tool (used by
+    triage) is left untouched."""
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    tool = {
+        "type": "function",
+        "name": tool_name,
+        "description": tool_description,
+        "parameters": parameters_schema,
+        "strict": True,
+    }
+    kwargs = {}
+    if reasoning_effort:
+        kwargs["reasoning"] = {"effort": reasoning_effort}
+    if max_output_tokens:
+        kwargs["max_output_tokens"] = max_output_tokens
+    try:
+        t0 = time.time()
+        response = client.responses.create(
+            model=model,
+            input=prompt,
+            tools=[tool],
+            tool_choice={"type": "function", "name": tool_name},
+            **kwargs,
+        )
+        usage = _usage_from_response(response, time.time() - t0, "call_gpt_mini_tool_ex")
+        USAGE_LOG.append(usage)
+    except Exception as e:
+        print(f"An API error occurred: {e}")
+        raise
+
+    for item in response.output:
+        if getattr(item, "type", None) == "function_call" and item.name == tool_name:
+            return json.loads(item.arguments), usage
     raise ValueError(
         f"Model did not return a '{tool_name}' tool call. Raw output: {response.output!r}"
     )
