@@ -918,6 +918,14 @@ Loaded skill: {skill_name} ({skill_code}). Only this skill's parameters exist fo
 Rules:
 - "value" must be copied EXACTLY as written inside the cited excerpt (same digits and characters). Ranges/lists: copy as written. Never convert units or calculate.
 - "chunk_id" is the single excerpt that contains the value. One row per (parameter, value, material); if a parameter has different values for different samples/conditions, emit one row for each.
+- NEVER merge several distinct reported values into one descriptive string. If an excerpt lists discrete values or
+  named conditions (e.g. "90%, 100%, and 110%", or three parts each with their own value), emit ONE ROW PER VALUE,
+  citing the same chunk_id for each - do not write a combined phrase like "80% to 108% in steps of 4%" or
+  "ranging from X to Y" when the excerpt itself names specific values. Only report an actual range as a single
+  value ("5-10 W") when the paper itself states it as one continuous range, not when it lists separate conditions.
+  Example - excerpt "[c0012] (Results) The parts were manufactured with laser powers of 90%, 100%, and 110%.":
+    WRONG: one row with value="90%, 100%, and 110%" (or value="90-110%")
+    RIGHT: three rows, all citing c0012: value="90%", value="100%", value="110%"
 - "unit" is the unit as written next to the value, or "" if none.
 - Only extract what the authors themselves used, printed, processed or measured. Do NOT take numbers from unrelated protocols (chemical extraction, chromatography, simulation settings) and label them as print parameters.
 - If a parameter is mentioned but no value is given, omit it. Never invent values.
@@ -1075,14 +1083,56 @@ def _dedupe_rows(rows):
     return out
 
 
+# ---------- Problem 3 fix: scale retrieval budget + reasoning effort to skill size ----------
+# A skill's taxonomy can range from ~10 parameters (a narrow subtype) to 170+ (an L1
+# category like PBF). A flat max_chunks/per_param_k/effort starves the big ones: the
+# model is offered a huge enum but only ~1-1.5k tokens of evidence, and at low effort
+# it stops after a handful of rows even when more relevant chunks were retrieved (see
+# the paper-1 layer-thickness / build-volume case). These tiers scale the retrieval
+# budget and effort up with parameter count. Override with size_tiers=[...] on run_lean
+# for different thresholds without touching this function.
+DEFAULT_SIZE_TIERS = [
+    # (max_unique_params_for_this_tier, max_chunks, per_param_k, min_reasoning_effort)
+    (40, None, None, None),   # small skill: use run_lean's own defaults unchanged
+    (100, 70, 4, None),       # medium skill: more evidence
+    (10**9, 110, 5, None),    # large skill (e.g. PBF's 174 params): most evidence
+]
+# Effort was tested and dropped: on the PBF paper (174 params), bumping effort to
+# "medium" alone matched baseline's recall exactly (50%) while burning 2.3x the
+# reasoning tokens, and adding it ON TOP of extra chunks ("both") matched chunks-only's
+# recall (75%) exactly while costing 2.3x the wall time and 3.5x the reasoning tokens.
+# The chunk budget was the entire effect; effort contributed nothing measurable here.
+# See ab_compare_tiers.py if a future case suggests effort scaling is worth revisiting.
+_EFFORT_RANK = {"minimal": 0, "low": 1, "medium": 2, "high": 3}
+
+
+def _scale_for_skill(skill, base_max_chunks, base_per_param_k, base_effort, tiers):
+    """Returns (max_chunks, per_param_k, effort) for this skill. Never LOWERS a value
+    the caller explicitly asked for - only raises the retrieval budget / effort when
+    the skill is big enough that the flat defaults would starve it (base_effort
+    "medium"/"high" is left untouched since there is nowhere higher to scale it)."""
+    n = len(_unique_params(skill))
+    for cap, mc, ppk, eff in tiers:
+        if n <= cap:
+            max_chunks = max(base_max_chunks, mc) if mc else base_max_chunks
+            per_param_k = max(base_per_param_k, ppk) if ppk else base_per_param_k
+            if eff and _EFFORT_RANK.get(eff, 0) > _EFFORT_RANK.get(base_effort, 0):
+                effort = eff
+            else:
+                effort = base_effort
+            return max_chunks, per_param_k, effort
+    return base_max_chunks, base_per_param_k, base_effort
+
+
 # ---------- 6e. One skill job ----------
-def _call_model(ctx, prompt, tool, usage):
-    """One forced tool call, one retry on malformed/missing output (same policy as triage)."""
+def _call_model(ctx, prompt, tool, usage, effort=None):
+    """One forced tool call, one retry on malformed/missing output (same policy as triage).
+    effort overrides ctx.effort for this call (used for size-scaled skills, see _scale_for_skill)."""
     last = None
     for attempt in range(2):
         try:
             args, u = ctx.caller(prompt, tool["name"], tool["description"], tool["schema"],
-                                 model=ctx.model, reasoning_effort=ctx.effort)
+                                 model=ctx.model, reasoning_effort=effort or ctx.effort)
             for k in ("input_tokens", "output_tokens", "reasoning_tokens", "cached_tokens", "seconds"):
                 usage[k] = usage.get(k, 0) + (u or {}).get(k, 0)
             usage["calls"] = usage.get("calls", 0) + 1
@@ -1096,9 +1146,14 @@ def _call_model(ctx, prompt, tool, usage):
 def _run_job_lean(job, ctx):
     skill, materials = job["skill"], job["materials"]
     usage = {}
-    selected, _ = ctx.retriever.retrieve_for_skill(skill, ctx.per_param_k, ctx.max_chunks)
+    max_chunks, per_param_k, effort = _scale_for_skill(
+        skill, ctx.max_chunks, ctx.per_param_k, ctx.effort, ctx.size_tiers)
+    selected, _ = ctx.retriever.retrieve_for_skill(skill, per_param_k, max_chunks)
     stats = {"skill": skill.code, "chunks_sent": len(selected),
-             "chunk_tokens_est": sum(approx_tokens(c.text) for c in selected)}
+             "chunk_tokens_est": sum(approx_tokens(c.text) for c in selected),
+             "n_params": len(_unique_params(skill)),
+             "max_chunks_used": max_chunks, "per_param_k_used": per_param_k,
+             "reasoning_effort_used": effort}
     if not selected:
         stats.update(rows_raw=0, note="no chunks retrieved")
         return {"rows": [], "rejected": [], "dropped": [], "hollow": [], "missing": [],
@@ -1126,7 +1181,7 @@ def _run_job_lean(job, ctx):
     # the retriever should see the same extended synonyms as the self-check
     skill_for_retrieval = SimpleNamespace(param_sections=skill.param_sections, synonyms=syn)
     if syn != (skill.synonyms or {}):
-        selected, _ = ctx.retriever.retrieve_for_skill(skill_for_retrieval, ctx.per_param_k, ctx.max_chunks)
+        selected, _ = ctx.retriever.retrieve_for_skill(skill_for_retrieval, per_param_k, max_chunks)
         chunk_by_id = {c.id: c for c in selected}
         stats["chunks_sent"] = len(selected)
         stats["chunk_tokens_est"] = sum(approx_tokens(c.text) for c in selected)
@@ -1142,7 +1197,7 @@ def _run_job_lean(job, ctx):
         synonym_text=_synonym_text(skill), hints_text=skill.build_hints_text(),
         excerpts=render_chunks(selected),
     )
-    args = _call_model(ctx, prompt, tool, usage)
+    args = _call_model(ctx, prompt, tool, usage, effort=effort)
     raw_rows = args.get("rows", []) or []
     requested = list(args.get("additional_skills", []) or [])
 
@@ -1181,7 +1236,7 @@ def _run_job_lean(job, ctx):
         rprompt = REPAIR_PROMPT.format(problems=problems,
                                        excerpts=render_chunks([chunk_by_id[i] for i in rej_ids]))
         try:
-            rargs = _call_model(ctx, rprompt, rtool, usage)
+            rargs = _call_model(ctx, rprompt, rtool, usage, effort=effort)
         except RuntimeError as e:
             print(f"Warning: repair call failed for {skill.code}: {e}")
             break
@@ -1297,7 +1352,7 @@ def run_lean(triage_result, sectioned, skill_library, subtype_skill_library=None
              model="gpt-5-mini", reasoning_effort="low", per_param_k=3, max_chunks=40,
              retry_rounds=1, allow_skill_requests=True, max_extra_skills=1, max_workers=4,
              caller=None, out_path="agentic_lean_results.json",
-             stats_path="agentic_lean_stats.json"):
+             stats_path="agentic_lean_stats.json", size_tiers=None):
     """Lean equivalent of run_orchestrator. Returns (results, stats).
 
     results has the same shape as run_orchestrator's (plus a 'lean' stats block and
@@ -1305,7 +1360,11 @@ def run_lean(triage_result, sectioned, skill_library, subtype_skill_library=None
     than the fixed pipeline's agentic_extraction_results.json, so the fixed results
     stay available as the comparison baseline / pseudo-gold.
     caller: LLM function with the signature of llm_pipeline.call_gpt_mini_tool_ex
-    (inject a fake one to test without an API key)."""
+    (inject a fake one to test without an API key).
+    size_tiers: per-skill-size overrides for max_chunks/per_param_k/reasoning_effort
+    (see DEFAULT_SIZE_TIERS); None uses the built-in tiers, so a big skill like PBF
+    automatically gets more retrieved evidence and higher reasoning effort than the
+    reasoning_effort/max_chunks/per_param_k arguments alone would give it."""
     t0 = time.time()
     source_kind = triage_result.get("_source_kind", "research-article")
     names = pick_section_names(triage_result, sectioned)
@@ -1313,6 +1372,7 @@ def run_lean(triage_result, sectioned, skill_library, subtype_skill_library=None
     ctx = SimpleNamespace(
         retriever=ChunkRetriever(chunks), source_kind=source_kind, model=model,
         effort=reasoning_effort, per_param_k=per_param_k, max_chunks=max_chunks,
+        size_tiers=size_tiers or DEFAULT_SIZE_TIERS,
         retry_rounds=retry_rounds, caller=caller or llm_pipeline.call_gpt_mini_tool_ex,
         paper_text=normalize_spaces("\n\n".join(sectioned[n] for n in names)),
     )
@@ -1391,7 +1451,9 @@ def run_lean(triage_result, sectioned, skill_library, subtype_skill_library=None
         for k, v in u.items():
             usage_total[k] = usage_total.get(k, 0) + v
     stats = {"wall_seconds": round(time.time() - t0, 2), "usage": usage_total,
-             "jobs": [s for _, s, _, _ in outputs], "reasoning_effort": reasoning_effort,
+             "jobs": [s for _, s, _, _ in outputs],
+             "reasoning_effort": reasoning_effort,   # BASE effort requested; a job may have run
+             "reasoning_effort_is_base_only": True,  # at a HIGHER effort - see jobs[i].reasoning_effort_used
              "chunks_total": len(chunks)}
     json.dump(results, open(out_path, "w"), indent=2, ensure_ascii=False)
     json.dump(stats, open(stats_path, "w"), indent=2)
@@ -1404,10 +1466,16 @@ def _canon_value(v):
 
 
 def _verified_keys(results):
+    """(parameter, value, material) -> row. Keying on material too matters:
+    two rows can share (parameter, value) when the same number applies to two
+    materials, and collapsing those would make row COUNTS and key-set sizes
+    disagree (e.g. 2 verified rows but only 1 unique key)."""
     keys = {}
     for r in results.values():
         for row in r.get("parameters", {}).get("verified", []):
-            keys[(row.get("parameter"), _canon_value(row.get("value")))] = row
+            k = (row.get("parameter"), _canon_value(row.get("value")),
+                 (row.get("material") or "").lower())
+            keys.setdefault(k, []).append(row)
     return keys
 
 
@@ -1423,17 +1491,26 @@ def compare_results(fixed, lean, fixed_cost, lean_cost):
         print(f"{label:28s}{fixed_cost.get(key, 0):>14.1f}{lean_cost.get(key, 0):>14.1f}")
     print(f"{'verified rows':28s}{count(fixed, 'verified'):>14d}{count(lean, 'verified'):>14d}")
     print(f"{'flagged rows':28s}{count(fixed, 'flagged'):>14d}{count(lean, 'flagged'):>14d}")
-    both = set(fk) & set(lk)
-    print(f"\nverified in BOTH (same parameter + value): {len(both)}")
-    print(f"only in fixed: {len(set(fk) - set(lk))} | only in lean: {len(set(lk) - set(fk))}")
+    both_keys = set(fk) & set(lk)
+    both = sum(len(fk[k]) for k in both_keys)          # count ROWS, not unique keys
+    only_fixed = sum(len(fk[k]) for k in fk if k not in lk)
+    only_lean = sum(len(lk[k]) for k in lk if k not in fk)
+    print(f"\nverified in BOTH (same parameter + value + material): {both}")
+    print(f"only in fixed: {only_fixed} | only in lean: {only_lean}")
+    assert both + only_fixed == count(fixed, "verified"), \
+        "row count vs key count mismatch -- comparison keys are not unique enough"
+    assert both + only_lean == count(lean, "verified"), \
+        "row count vs key count mismatch -- comparison keys are not unique enough"
     for label, a, b in (("ONLY IN FIXED", fk, lk), ("ONLY IN LEAN", lk, fk)):
         extra = [k for k in a if k not in b]
         if extra:
             print(f"\n{label} (first 12):")
             for k in extra[:12]:
-                print(f"  {k[0]} = {a[k].get('value')}  | \"{(a[k].get('quote') or '')[:90]}\"")
+                for row in a[k]:
+                    print(f"  {k[0]} = {row.get('value')} [{row.get('material') or '-'}] "
+                          f"| \"{(row.get('quote') or '')[:90]}\"")
     print("=" * 60)
-    return {"both": len(both), "only_fixed": len(set(fk) - set(lk)), "only_lean": len(set(lk) - set(fk))}
+    return {"both": both, "only_fixed": only_fixed, "only_lean": only_lean}
 
 
 def _print_results(results):
@@ -1523,6 +1600,12 @@ if __name__ == "__main__":
         print(f"\nLean cost: {u.get('calls', 0)} calls | {u.get('input_tokens', 0)} in / "
               f"{u.get('output_tokens', 0)} out tokens ({u.get('reasoning_tokens', 0)} reasoning) | "
               f"{stats['wall_seconds']}s wall")
+        scaled = [j for j in stats["jobs"] if j.get("reasoning_effort_used") and
+                  j["reasoning_effort_used"] != stats["reasoning_effort"]]
+        if scaled:
+            print(f"(scaled up for large skills: " +
+                  ", ".join(f"{j['skill']} ({j['n_params']} params -> {j['reasoning_effort_used']}, "
+                           f"{j['max_chunks_used']} chunks)" for j in scaled) + ")")
 
     else:  # compare
         llm_pipeline.USAGE_LOG.clear()
