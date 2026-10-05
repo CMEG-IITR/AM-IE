@@ -75,8 +75,10 @@ class TablePreservingExtractor(HTMLParser):
         elif t == "caption":
             self._in_caption = True
             self._caption_buf = []
-        elif t in ("tr",):
-            self._row = []
+        elif t in ("tr", "row"):   # "row" = CALS/DocBook table markup (Elsevier/Springer XML),
+            self._row = []        # "tr" = HTML. Without "row" here, any paper using CALS tables
+                                  # (<tgroup><row><entry>...) has every table silently dropped:
+                                  # _rows never gets a row boundary, stays empty, _emit_table() bails.
         elif t in ("td", "th", "entry"):
             self._in_cell = True
             self._cell_buf = []
@@ -97,7 +99,7 @@ class TablePreservingExtractor(HTMLParser):
         elif t in ("td", "th", "entry") and self._in_cell:
             self._row.append(" ".join(self._cell_buf).strip())
             self._in_cell = False
-        elif t == "tr":
+        elif t in ("tr", "row"):
             if self._row:
                 self._rows.append(self._row)
             self._row = []
