@@ -224,3 +224,11 @@ vocab_tree.json
 
 .idea
 extraction_results.json
+
+# Generated extraction and evaluation outputs
+*_results.json
+*_stats.json
+*_report.json
+*_comparison.json
+triage_result.json
+ab_results/
