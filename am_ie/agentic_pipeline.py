@@ -16,6 +16,7 @@ Flow:
   4. Results merged, each row tagged with which skill produced it.
 """
 import json
+from pathlib import Path
 from dataclasses import dataclass, field
 
 from .llm_pipeline import call_gpt_mini, parse_response, verify_materials, verify_parameters
@@ -54,101 +55,32 @@ class CategorySkill:
 # ---------- 2. Skill library, built from your taxonomy tree + hand-curated specifics ----------
 # Per-category domain knowledge — this is what makes each skill actually specific,
 # rather than the same generic template with a different vocabulary list swapped in.
-CATEGORY_SPECIFICS = {
-    "PBF": {
-        "synonyms": {
-            "Scan Speed": ["scanning speed", "laser scan velocity", "hatch velocity", "laser speed"],
-            "Layer Thickness": ["build layer height", "powder layer thickness", "slice thickness"],
-            "Laser Power": ["irradiation power", "beam power"],
-        },
-        "domain_hints": [
-            "Laser power and scan speed are very often reported together in one clause "
-            "(e.g. '200 W and 1000 mm/s') — check for both even if only one is named explicitly nearby.",
-            "Hatch spacing and layer thickness are frequently listed in the same sentence as a parameter set.",
-            "Watch for energy density (e.g. J/mm^3) reported instead of raw laser power/speed — "
-            "if only energy density is given, note it but do not back-calculate power/speed.",
-        ],
-    },
-    "DED": {
-        "synonyms": {
-            "Laser Power": ["deposition power", "beam power"],
-            "Travel Speed": ["scan speed", "traverse speed", "deposition speed"],
-            "Wire Feed Rate": ["feed rate", "wire feed speed"],
-        },
-        "domain_hints": [
-            "Wire-fed and powder-fed DED report different feedstock parameters — check which "
-            "feedstock type is used before assuming which parameter set applies.",
-            "Travel speed and wire/powder feed rate are usually reported as a paired ratio "
-            "(feed-to-travel-speed ratio) — extract both values even if only the ratio is emphasized.",
-        ],
-    },
-    "MEX": {
-        "synonyms": {
-            "Nozzle Temperature": ["extrusion temperature", "print head temperature", "hot end temperature"],
-            "Print Speed": ["extrusion speed", "printing speed", "travel speed"],
-        },
-        "domain_hints": [
-            "Bed temperature and nozzle temperature are usually both reported — don't stop after finding one.",
-            "Infill percentage and pattern are often in a separate sentence from thermal parameters.",
-        ],
-    },
-    "VPP": {
-        "synonyms": {
-            "Exposure Time": ["cure time", "curing time", "UV curing", "irradiation time", "UV exposure duration"],
-            "Light Intensity": ["UV intensity", "irradiance", "power density"],
-            "XY Resolution": ["print resolution", "XY resolution", "planar resolution"],
-            "Z Resolution": ["layer resolution", "Z resolution", "vertical resolution"],
-        },
-        "domain_hints": [
-            "VPP papers often report intensity in mW/cm^2 rather than W — do not convert units, "
-            "report as stated.",
-            "Layer cure time and light intensity are the two parameters most often paired together.",
-            "Cure/curing time is very often reported as a duration alone without the word 'time' "
-            "attached (e.g. '40 s' or 'a base curing time of 40 s') — check numeric durations near "
-            "any mention of curing/UV/exposure even if not explicitly labeled a parameter.",
-            "XY resolution and Z (layer) resolution are frequently reported in micrometers as a "
-            "print-quality spec, separate from layer thickness — extract both if given. Watch for "
-            "the parenthetical phrasing pattern '(XY around 50 µm)' or '(XYZ around 15 µm)', where "
-            "the value sits inside a qualitative descriptor like 'Good resolution (...)' rather than "
-            "next to the parameter name directly.",
-            "Resin viscosity is often described qualitatively ('low viscosity resin preferred') as "
-            "well as with a numeric value — capture the qualitative statement too if no number is given, "
-            "flagging confidence as medium/low.",
-        ],
-    },
-    "BJT": {
-        "synonyms": {
-            "Binder Saturation": ["saturation level", "binder saturation ratio"],
-        },
-        "domain_hints": [
-            "Powder D10/D50/D90 particle size values are usually reported as a set — check for all three.",
-            "Curing/sintering parameters are often in a separate post-processing paragraph, not near the "
-            "binder jetting parameters themselves.",
-        ],
-    },
-    "MJT": {
-        "synonyms": {
-            "Droplet Volume": ["droplet size", "jetted droplet volume"],
-            "XY Resolution": ["jetting resolution", "print resolution"],
-            "Z Resolution": ["layer resolution"],
-        },
-        "domain_hints": [
-            "Droplet volume and jetting frequency are usually reported together.",
-            "PolyJet/MultiJet papers commonly use dual materials — a 'build material' (the actual part) "
-            "and a 'support material' (removed after printing) — extract both material names and tag "
-            "which role each plays if stated.",
-            "Support removal method (e.g. water jetting, soaking, dissolving) is often reported as a "
-            "separate post-processing step, not near the print parameters themselves.",
-            "A roller/leveling mechanism between layers is specific to inkjet-based (PolyJet) printing — "
-            "if mentioned, it usually accompanies build/support material ratio details nearby.",
-        ],
-    },
-    "SHL": {"synonyms": {}, "domain_hints": [
-        "Sheet thickness and bonding parameters (e.g. ultrasonic amplitude, weld temperature) are usually "
-        "reported in separate sentences — check both.",
-    ]},
-    "OTHER": {"synonyms": {}, "domain_hints": []},
-}
+def _load_skill_document(code):
+    """Read one skill's hand-curated guidance from its SKILL.md file."""
+    path = Path(__file__).parent / "skills" / code.lower() / "SKILL.md"
+    if not path.is_file():
+        return {"synonyms": {}, "domain_hints": [], "sections": []}
+
+    content = path.read_text(encoding="utf-8")
+    parts = content.split("---", 2)
+    body = parts[2] if len(parts) == 3 else content
+    section = None
+    parsed = {"synonyms": {}, "domain_hints": [], "sections": []}
+    for line in body.splitlines():
+        if line.startswith("## "):
+            section = line[3:].strip()
+        elif section == "Synonyms" and line.startswith("- **"):
+            canonical, separator, alternatives = line[4:].partition("**:")
+            if separator:
+                parsed["synonyms"][canonical.strip()] = [
+                    item.strip() for item in alternatives.split(",") if item.strip()
+                ]
+        elif section == "Extraction notes" and line.startswith("- "):
+            parsed["domain_hints"].append(line[2:].strip())
+        elif section == "Taxonomy sections" and line.startswith("- "):
+            parsed["sections"].append(line[2:].strip())
+    return parsed
+
 
 def build_skill_library(vocab_tree_path="vocab_tree.json"):
     """Returns dict {category_code: CategorySkill} — one skill per AM process category,
@@ -161,7 +93,7 @@ def build_skill_library(vocab_tree_path="vocab_tree.json"):
             continue
         param_sections = {k: v for k, v in data["params"].items() if k != "_shared"}
         param_sections.update(data["params"].get("_shared", {}))
-        specifics = CATEGORY_SPECIFICS.get(code, {"synonyms": {}, "domain_hints": []})
+        specifics = _load_skill_document(code)
         skills[code] = CategorySkill(
             code=code,
             name=l1,
@@ -172,64 +104,24 @@ def build_skill_library(vocab_tree_path="vocab_tree.json"):
     return skills
 
 
-# ---------- 3. L2 SUBTYPE skills — finer-grained than the L1 category skills above ----------
-# Maps each L2 subtype code to the taxonomy section(s) that actually apply to it.
-# A subtype only needs its OWN process-parameter section + whichever feedstock
-# section matches it, not every section under the parent category.
-SUBTYPE_SECTION_MAP = {
-    # VPP subtypes
-    "VPP-SLA":  ["Process Parameters — VAT-SLA", "Feedstock Properties — Resin"],
-    "VPP-DLP":  ["Process Parameters — DLP", "Feedstock Properties — Resin"],
-    "VPP-CLIP": ["Process Parameters — CLIP / CDLP", "Feedstock Properties — Ceramic-Loaded Resin",
-                 "Feedstock Properties — Resin"],
-    "VPP-2PP":  ["Process Parameters — Two-Photon Polymerization",
-                 "Feedstock Properties — Nonlinear Photoresist (2PP)"],
-    "VPP-MSLA": ["Process Parameters — MSLA / Mono LCD", "Feedstock Properties — Resin"],
-    # MJT subtypes
-    "MJT-PJ":   ["Process Parameters — MJ-PJ", "Feedstock Properties — Resin/Droplet"],
-    "MJT-NPJ":  ["Process Parameters — Material Jetting", "Feedstock Properties — Nanoparticle Suspension"],
-    "MJT-DOD":  ["Process Parameters — Material Jetting", "Process Parameters — Liquid Metal Jetting",
-                 "Feedstock Properties — Wax", "Feedstock Properties — Liquid Metal / Metal Ink"],
-}
-
-# Subtype-specific overrides/additions on top of the parent category's synonyms/hints.
-# Only add entries here once you've confirmed them against real papers for that subtype —
-# left empty means "inherits parent VPP/MJT knowledge only," not "nothing to extract."
-SUBTYPE_SPECIFICS = {
-    "VPP-DLP": {
-        "synonyms": {"Exposure Time": ["projection time", "pixel exposure time"]},
-        "domain_hints": ["DLP projects a full layer at once (per-layer exposure time), "
-                          "unlike laser-scanned SLA — do not confuse layer exposure time with "
-                          "per-point/scan-based timing terminology from SLA papers."],
-    },
-    "VPP-SLA": {
-        "synonyms": {"Scan Speed": ["laser scan speed", "galvo scan speed"]},
-        "domain_hints": ["Laser-based SLA reports scan speed (mm/s) in addition to exposure time — "
-                          "DLP/MSLA subtypes do not have this parameter since they expose a full layer at once."],
-    },
-    "MJT-PJ": {
-        "synonyms": {},
-        "domain_hints": ["PolyJet dual-material (build+support) terminology applies specifically "
-                          "here — see general MJT hints for build/support material extraction."],
-    },
-}
-
+# ---------- 3. L2 SUBTYPE skills — scoped by their SKILL.md taxonomy sections ----------
 def build_subtype_skill_library(vocab_tree_path="vocab_tree.json"):
     """
     Returns dict {L2_subtype_code: CategorySkill}, e.g. {"VPP-SLA": ..., "VPP-DLP": ...}.
     Each subtype skill is scoped to ONLY its own process-parameter/feedstock sections
-    (via SUBTYPE_SECTION_MAP) plus the parent category's shared sections (post-processing etc.),
-    and inherits the parent category's synonyms/hints merged with any subtype-specific overrides.
+    (via each subtype SKILL.md) plus the parent category's shared sections (post-processing etc.),
+    and inherits the parent category's synonyms/hints merged with any subtype-specific guidance.
     """
     tree = json.load(open(vocab_tree_path))
     skills = {}
     for l1_code, data in tree.items():
         l2_map = data.get("L2", {})
         shared = data["params"].get("_shared", {})
-        parent_specifics = CATEGORY_SPECIFICS.get(l1_code, {"synonyms": {}, "domain_hints": []})
+        parent_specifics = _load_skill_document(l1_code)
 
         for l2_code, l2_name in l2_map.items():
-            section_names = SUBTYPE_SECTION_MAP.get(l2_code)
+            overrides = _load_skill_document(l2_code)
+            section_names = overrides["sections"]
             if not section_names:
                 continue  # no mapping defined yet for this subtype — skip rather than guess
 
@@ -239,7 +131,6 @@ def build_subtype_skill_library(vocab_tree_path="vocab_tree.json"):
                     param_sections[sec] = data["params"][sec]
             param_sections.update(shared)  # shared sections (post-processing etc.) always included
 
-            overrides = SUBTYPE_SPECIFICS.get(l2_code, {"synonyms": {}, "domain_hints": []})
             merged_synonyms = {**parent_specifics["synonyms"], **overrides["synonyms"]}
             merged_hints = parent_specifics["domain_hints"] + overrides["domain_hints"]
 
