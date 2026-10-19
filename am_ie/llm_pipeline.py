@@ -159,12 +159,16 @@ def call_gpt_mini_tool(prompt: str, tool_name: str, tool_description: str,
     }
 
     try:
+        t0 = time.time()
         response = client.responses.create(
             model=model,
             input=prompt,
             tools=[tool],
             tool_choice={"type": "function", "name": tool_name},
         )
+        USAGE_LOG.append(_usage_from_response(
+            response, time.time() - t0, "call_gpt_mini_tool",
+        ))
     except Exception as e:
         print(f"An API error occurred: {e}")
         raise

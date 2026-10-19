@@ -102,6 +102,10 @@ def run(paper_path, vocab_path="vocab_tree.json", output_root="harness_runs",
     _write_json(manifest_path, manifest)
 
     try:
+        # Start a fresh usage window before any model-backed stage. Triage
+        # calls are recorded by call_gpt_mini_tool; extraction usage is
+        # returned directly by run_lean and is combined below.
+        llm_pipeline.USAGE_LOG.clear()
         raw_markup = paper.read_text(encoding="utf-8")
         if triage_path:
             triage_file = Path(triage_path).resolve()
@@ -126,7 +130,7 @@ def run(paper_path, vocab_path="vocab_tree.json", output_root="harness_runs",
         material = classify_material(triage, scan_text="\n\n".join(sectioned.values()))
         _write_json(run_dir / "material_classification.json", material)
 
-        llm_pipeline.USAGE_LOG.clear()
+        triage_usage = llm_pipeline.summarize_usage(llm_pipeline.USAGE_LOG)
         results, stats = agentic_pipeline.run_lean(
             triage, sectioned, skill_library, subtype_library,
             model=config.model,
@@ -139,10 +143,25 @@ def run(paper_path, vocab_path="vocab_tree.json", output_root="harness_runs",
             out_path=str(run_dir / "extraction.json"),
             stats_path=str(run_dir / "stats.json"),
         )
+        extraction_usage = stats.get("usage", {})
+        usage_fields = (
+            "calls", "input_tokens", "output_tokens", "reasoning_tokens",
+            "cached_tokens", "seconds",
+        )
+        stats["stage_usage"] = {
+            "triage": triage_usage,
+            "extraction": extraction_usage,
+        }
+        stats["usage"] = {
+            field: triage_usage.get(field, 0) + extraction_usage.get(field, 0)
+            for field in usage_fields
+        }
+        _write_json(run_dir / "stats.json", stats)
         manifest["status"] = "complete"
         manifest["finished_at"] = datetime.now(timezone.utc).isoformat()
         manifest["elapsed_seconds"] = round(time.time() - started, 2)
-        manifest["llm_usage"] = stats.get("usage", {})
+        manifest["llm_usage"] = stats["usage"]
+        manifest["stage_usage"] = stats["stage_usage"]
         manifest["result_counts"] = {
             "skills": len(results),
             "verified_rows": sum(len(r.get("parameters", {}).get("verified", [])) for r in results.values()),
