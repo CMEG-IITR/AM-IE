@@ -44,6 +44,12 @@ class Chunk:
     kind: str = "text"   # "text" | "table"
     quote: str = ""      # verbatim source string for this chunk (== text, except table
                          # rows where it is just the row cells, without the synthetic header)
+    table_id: str = ""   # stable per-document table id; empty for prose chunks
+    table_row: int = 0    # one-based row number within table_id; zero for prose chunks
+    table_xml_row: int = 0
+    table_headers: tuple = ()
+    table_cells: tuple = ()
+    table_caption: str = ""
 
 
 def approx_tokens(text):
@@ -150,24 +156,60 @@ def _table_row_chunks(lines):
 def build_chunks(sectioned, section_names=None, max_chars=600, min_chars=30):
     """sectioned: {section_name: text} from triage_pipeline.strip_markup_sectioned.
     section_names: optional iterable of exact section names to keep (see
-    pick_section_names). The pre-heading 'body' bucket is always skipped."""
+    pick_section_names). Pre-heading prose is skipped, but any table in that
+    bucket is retained so tables do not depend on section selection."""
     keep = set(section_names) if section_names is not None else None
     chunks = []
+    table_count = 0
+    tables_by_section = defaultdict(list)
+    for grid in getattr(sectioned, "tables", []) or []:
+        tables_by_section[grid.get("section", "body")].append(grid)
+    table_position = defaultdict(int)
 
-    def add(section, text, kind, quote=None):
+    def add(section, text, kind, quote=None, table_id="", table_row=0,
+            table_xml_row=0, table_headers=(), table_cells=(), table_caption=""):
         chunks.append(Chunk(id=f"c{len(chunks):04d}", idx=len(chunks),
                             section=section, text=text, kind=kind,
-                            quote=text if quote is None else quote))
+                            quote=text if quote is None else quote,
+                            table_id=table_id, table_row=table_row,
+                            table_xml_row=table_xml_row,
+                            table_headers=tuple(table_headers),
+                            table_cells=tuple(table_cells), table_caption=table_caption))
 
     for name, text in sectioned.items():
-        if name == "body" or (keep is not None and name not in keep):
+        if keep is not None and name not in keep:
             continue
         for kind, payload in _iter_blocks(normalize_spaces(text)):
+            # Keep pre-heading prose out as before, but never lose a table just
+            # because it occurs before the first recognized section heading.
+            if name == "body" and kind != "table":
+                continue
             if kind == "table":
-                prefix, rows = _table_row_chunks(payload)
-                for row in rows:
-                    for piece in _hard_split(row, int(max_chars * 1.5)):
-                        add(name, prefix + piece, "table", quote=piece)
+                table_count += 1
+                grids = tables_by_section.get(name, [])
+                grid = grids[table_position[name]] if table_position[name] < len(grids) else None
+                table_position[name] += 1
+                if grid:
+                    table_id = grid.get("id") or f"t{table_count:04d}"
+                    headers = list(grid.get("headers") or [])
+                    caption = grid.get("caption", "")
+                    prefix = f"[TABLE {caption}] Columns: {' | '.join(headers)} | Row: "
+                    for data_row_index, row in enumerate(grid.get("rows", []), 1):
+                        cells = list(row.get("cells", []))
+                        row_text = " | ".join(cells)
+                        for piece in _hard_split(row_text, int(max_chars * 1.5)):
+                            add(name, prefix + piece, "table", quote=piece,
+                                table_id=table_id, table_row=data_row_index,
+                                table_xml_row=int(row.get("xml_row", data_row_index + 1)),
+                                table_headers=headers, table_cells=cells,
+                                table_caption=caption)
+                else:
+                    table_id = f"t{table_count:04d}"
+                    prefix, rows = _table_row_chunks(payload)
+                    for row_index, row in enumerate(rows, 1):
+                        for piece in _hard_split(row, int(max_chars * 1.5)):
+                            add(name, prefix + piece, "table", quote=piece,
+                                table_id=table_id, table_row=row_index)
                 continue
             sents = []
             for s in split_sentences(payload):
@@ -227,7 +269,10 @@ def pick_section_names(triage, sectioned):
 
 def render_chunks(chunks):
     """Text block to put in a prompt. The model cites the [cXXXX] ids."""
-    return "\n".join(f"[{c.id}] ({c.section}) {c.text}" for c in chunks)
+    return "\n".join(
+        f"[{c.id}] ({c.section}{', table ' + c.table_id if c.table_id else ''}) {c.text}"
+        for c in chunks
+    )
 
 
 # =====================================================================

@@ -11,13 +11,13 @@ category's own parameters, not all 373) without spinning up N separate agents.
 Flow:
   1. Triage identifies which categories (skills) are relevant for this paper.
   2. Orchestrator loads only those skills' schemas.
-  3. For each relevant skill, orchestrator makes one extraction call scoped
-     to that skill's taxonomy subtree.
+  3. For each relevant skill, orchestrator makes a schema-locked extraction
+     call scoped to that skill's taxonomy subtree; oversized table sets batch.
   4. Results merged, each row tagged with which skill produced it.
 """
 import json
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .llm_pipeline import call_gpt_mini, parse_response, verify_materials, verify_parameters
 
@@ -80,6 +80,12 @@ def _load_skill_document(code):
         elif section == "Taxonomy sections" and line.startswith("- "):
             parsed["sections"].append(line[2:].strip())
     return parsed
+
+
+def _load_table_extraction_skill():
+    """Load focused table-reading guidance only for prompts containing tables."""
+    path = Path(__file__).parent / "skills" / "table-extraction" / "SKILL.md"
+    return path.read_text(encoding="utf-8") if path.is_file() else ""
 
 
 def build_skill_library(vocab_tree_path="vocab_tree.json"):
@@ -704,7 +710,7 @@ def run_orchestrator(triage_result, relevant_text_by_category, skill_library,
 
 
 # =====================================================================
-# 6. LEAN HARNESS  (retrieve -> one schema-locked call per skill ->
+# 6. LEAN HARNESS  (retrieve -> schema-locked call(s) per skill ->
 #    code self-checks -> targeted repair)
 #
 # Same result shape as run_orchestrator, so downstream code is unaffected.
@@ -712,9 +718,8 @@ def run_orchestrator(triage_result, relevant_text_by_category, skill_library,
 # if a lean call errors out.
 #
 #   chunk_retrieval   numbered chunks + BM25/unit search        (step 1)
-#   _run_job          ONE call per skill: model only sees the retrieved chunks
-#                     and can only emit real parameter names / real chunk ids /
-#                     real materials (strict tool schema)        (step 2)
+#   _run_job          retrieved prose plus every table, batching only when the
+#                     prompt budget requires it; strict tool schema (step 2)
 #   self_check_row    code checks each row; rejected rows go back to the
 #                     model ONCE with the reason and only their own chunk (step 3)
 #   run_lean          skills run in parallel, reasoning effort is configurable,
@@ -821,6 +826,7 @@ Rules:
 - Only extract what the authors themselves used, printed, processed or measured. Do NOT take numbers from unrelated protocols (chemical extraction, chromatography, simulation settings) and label them as print parameters.
 - If a parameter is mentioned but no value is given, omit it. Never invent values.
 - An empty "rows" list is the CORRECT answer when the excerpts report nothing from this skill.
+{table_block}
 {review_block}{skill_request_block}
 {synonym_text}
 
@@ -829,6 +835,11 @@ Rules:
 EXCERPTS:
 {excerpts}
 """
+
+# Leave room for the system message and structured tool schema. This estimate is
+# intentionally conservative; unusually large tables are split into batches.
+EXTRACTION_INPUT_TOKEN_BUDGET = 80000
+EXTRACTION_TOKEN_ESTIMATE_MARGIN = 4096
 
 REVIEW_BLOCK = """- This paper is a REVIEW. Also extract values the authors state as general facts and values attributed to cited work
   (set provenance_type; for cited-secondary give cited_work and citation_marker when visible in the excerpt, else empty strings).
@@ -929,6 +940,11 @@ def self_check_row(row, chunk, name_tokens):
         prob = range_problem(row["parameter"], unit, nums)
         if prob:
             return prob
+    # A structured XML table check has already tied this value to the exact
+    # taxonomy-matched column. Abbreviated headers such as "Elong." should not
+    # fail the prose-oriented keyword/unit heuristic below.
+    if row.get("xml_verified") and chunk.kind == "table":
+        return None
     urx = unit_regex(unit)
     if urx is not None:
         toks = name_tokens.get(row["parameter"], set())
@@ -939,6 +955,203 @@ def self_check_row(row, chunk, name_tokens):
 
 
 # ---------- 6d. Row materialisation ----------
+TABLE_HEADER_ALIASES = {
+    "elong": ("elongation", "elongation at break"),
+    "elongation": ("elongation", "elongation at break"),
+    "yield str": ("yield strength",),
+    "ys": ("yield strength",),
+}
+
+
+def _table_header_key(header):
+    bare, _ = split_param(str(header or ""))
+    return " ".join(tokenize(bare))
+
+
+def match_table_headers_to_parameters(headers, skill):
+    """Map unambiguous XML column headers to exact names in a skill taxonomy."""
+    params_by_key = {}
+    for parameter in _unique_params(skill):
+        bare, _ = split_param(parameter)
+        params_by_key.setdefault(_table_header_key(bare), []).append(parameter)
+
+    aliases = {}
+    for source in (GLOBAL_SYNONYMS, skill.synonyms or {}):
+        for canonical, phrases in source.items():
+            canonical_key = _table_header_key(canonical)
+            for phrase in phrases:
+                aliases.setdefault(_table_header_key(phrase), set()).add(canonical_key)
+
+    result = {}
+    for column_index, header in enumerate(headers):
+        key = _table_header_key(header)
+        candidate_keys = [key]
+        candidate_keys.extend(_table_header_key(alias) for alias in TABLE_HEADER_ALIASES.get(key, ()))
+        candidate_keys.extend(sorted(aliases.get(key, ())))
+
+        matches = []
+        for candidate_key in candidate_keys:
+            matches.extend(params_by_key.get(candidate_key, []))
+            if matches:
+                break
+        matches = list(dict.fromkeys(matches))
+        if len(matches) == 1:
+            result[column_index] = matches[0]
+    return result
+
+
+def _normalize_table_value(value):
+    return re.sub(r"\s+", " ", str(value or "").replace("\u2212", "-").strip()).casefold()
+
+
+def _table_cell_supports_value(cell_value, extracted_value):
+    cell = _normalize_table_value(cell_value)
+    value = _normalize_table_value(extracted_value)
+    if not cell or not value:
+        return False
+    if cell == value:
+        return True
+    # Allow a value copied from one item in a multi-value cell, while preventing
+    # a numeric substring such as 49 from matching 149 or 49.5.
+    pattern = rf"(?<![\w.]){re.escape(value)}(?![\w.])"
+    return re.search(pattern, cell) is not None
+
+
+def verify_table_row_against_xml(row, chunk, header_mapping):
+    """Require a table extraction to match both a mapped column and its XML cell."""
+    if chunk is None or chunk.kind != "table":
+        return "table citation does not resolve to an XML table row"
+    columns = [i for i, parameter in header_mapping.items()
+               if parameter == row.get("parameter")]
+    if not columns:
+        return f"no XML table header maps to parameter {row.get('parameter')!r}"
+    for column in columns:
+        if column >= len(chunk.table_cells):
+            continue
+        if _table_cell_supports_value(chunk.table_cells[column], row.get("value")):
+            row["table_column"] = column + 1
+            row["table_header"] = chunk.table_headers[column]
+            row["xml_cell_value"] = chunk.table_cells[column]
+            row["xml_verified"] = True
+            return None
+    return (f"value {row.get('value')!r} is not present in the XML cell for "
+            f"{row.get('parameter')!r}")
+
+
+_TABLE_PROCESS_ALIASES = {
+    "DED": (r"\b(?:LP\s*[- ]?\s*)?DED\b", r"\bdirected energy deposition\b"),
+    "PBF": (r"\bL\s*[- ]?\s*PBF\b", r"\bLPBF\b", r"\bPBF\b",
+            r"\blaser powder bed fusion\b", r"\bpowder bed fusion\b", r"\bSLM\b", r"\bDMLS\b"),
+}
+_TABLE_ACTUAL_BUILD = re.compile(
+    r"\b(?:made use of|built|printed|manufactur\w*|fabricat\w*|produced|processed|using)\b", re.I)
+_TABLE_FUTURE = re.compile(r"\b(?:plan(?:s|ned)?|future|proposed|intend(?:s|ed)?|development)\b", re.I)
+
+
+def _table_material_tokens(chunks):
+    """Get alloy-like IDs from table labels, avoiding guesses from body text."""
+    labels = " ".join([
+        chunks[0].table_caption, *chunks[0].table_headers,
+        *(cell for chunk in chunks for cell in chunk.table_cells),
+    ])
+    return list(dict.fromkeys(re.findall(r"\b[A-Z][A-Za-z0-9]*(?:[-–][A-Za-z0-9]+)+\b", labels)))
+
+
+def _table_process_evidence(chunks, prose_chunks):
+    """Return the uniquely supported process for a table, or None if ambiguous.
+
+    Evidence must connect a material named by the caption/header to an actual
+    manufacturing statement in the same clause. Planned/future work does not
+    route a table to that process.
+    """
+    materials = _table_material_tokens(chunks)
+    if not materials:
+        return None, {"reason": "no material identifier in caption or headers"}
+
+    scores = {"DED": 0, "PBF": 0}
+    evidence = {"DED": [], "PBF": []}
+    # Split contrast and future-work clauses so a planned DED process does not
+    # inherit a positive build statement for a different alloy in the sentence.
+    for chunk in prose_chunks:
+        sentence = chunk.text
+        clauses = re.split(r"\b(?:but|whereas|although|while|and\s+plans?\s+are\s+in\s+place)\b", sentence, flags=re.I)
+        for clause in clauses:
+            material = next((m for m in materials if re.search(re.escape(m), clause, re.I)), None)
+            if not material or not _TABLE_ACTUAL_BUILD.search(clause) or _TABLE_FUTURE.search(clause):
+                continue
+            for process, patterns in _TABLE_PROCESS_ALIASES.items():
+                if any(re.search(pattern, clause, re.I) for pattern in patterns):
+                    scores[process] += 1
+                    evidence[process].append({"material": material, "text": clause.strip()[:300]})
+
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    if ranked[0][1] == 0 or ranked[0][1] == ranked[1][1]:
+        return None, {"reason": "no unique process evidence", "scores": scores, "evidence": evidence}
+    return ranked[0][0], {"scores": scores, "evidence": evidence}
+
+
+def _route_table_chunks_by_process(table_chunks, prose_chunks):
+    """Assign each structured table to at most one AM process category."""
+    groups = OrderedDict()
+    for chunk in table_chunks:
+        groups.setdefault(chunk.table_id or chunk.id, []).append(chunk)
+    routes, diagnostics = {}, {}
+    for table_id, chunks in groups.items():
+        route, detail = _table_process_evidence(chunks, prose_chunks)
+        routes[table_id] = route
+        diagnostics[table_id] = {"process_category": route, **detail}
+    return routes, diagnostics
+
+
+def _extract_mapped_xml_table_rows(table_chunks, skill, fixed_material=None):
+    """Read every taxonomy-matched cell directly from the XML-derived grid."""
+    groups = OrderedDict()
+    for chunk in table_chunks:
+        groups.setdefault(chunk.table_id, []).append(chunk)
+
+    extracted, mappings, errors = [], {}, []
+    for table_id, chunks in groups.items():
+        headers = chunks[0].table_headers
+        mapping = match_table_headers_to_parameters(headers, skill)
+        mappings[table_id] = mapping
+        if not mapping:
+            continue
+        for chunk in chunks:
+            for column, parameter in mapping.items():
+                if column >= len(chunk.table_cells):
+                    errors.append({"table_id": table_id, "row": chunk.table_row,
+                                   "column": column + 1, "error": "XML row is shorter than its header grid"})
+                    continue
+                value = chunk.table_cells[column].strip()
+                if not value or value.casefold() in {"-", "–", "—", "n/a", "na", "not reported"}:
+                    continue
+                _, header_unit = split_param(headers[column])
+                _, parameter_unit = split_param(parameter)
+                row = {
+                    "parameter": parameter,
+                    "value": value,
+                    "unit": header_unit or parameter_unit,
+                    "material": fixed_material or "",
+                    "chunk_id": chunk.id,
+                    "section": chunk.section,
+                    "quote": chunk.quote,
+                    "context": chunk.text,
+                    "table_id": table_id,
+                    "table_row": chunk.table_row,
+                    "table_xml_row": chunk.table_xml_row,
+                    "table_column": column + 1,
+                    "table_header": headers[column],
+                    "xml_cell_value": value,
+                }
+                error = verify_table_row_against_xml(row, chunk, mapping)
+                if error:
+                    errors.append({"table_id": table_id, "row": chunk.table_row,
+                                   "column": column + 1, "error": error})
+                else:
+                    extracted.append(row)
+    return extracted, mappings, errors
+
+
 def _materialize(raw_rows, chunk_by_id, fixed_material, source_kind):
     rows = []
     for r in raw_rows:
@@ -954,6 +1167,11 @@ def _materialize(raw_rows, chunk_by_id, fixed_material, source_kind):
         }
         if c is not None and c.kind == "table":
             row["context"] = c.text                # caption + column headers + row
+            row["table_id"] = c.table_id
+            row["table_row"] = c.table_row
+            row["table_xml_row"] = c.table_xml_row
+            row["table_headers"] = list(c.table_headers)
+            row["table_cells"] = list(c.table_cells)
         if source_kind == "review":
             row["provenance"] = {"type": r.get("provenance_type") or "general-author-statement",
                                  "cited_work": r.get("cited_work") or "",
@@ -1017,16 +1235,17 @@ def _scale_for_skill(skill, base_max_chunks, base_per_param_k, base_effort, tier
 
 # ---------- 6e. One skill job ----------
 def _call_model(ctx, prompt, tool, usage, effort=None):
-    """One forced tool call, one retry on malformed/missing output (same policy as triage).
+    """One forced tool call; retry only outside strict one-call-per-skill runs.
     effort overrides ctx.effort for this call (used for size-scaled skills, see _scale_for_skill)."""
     last = None
-    for attempt in range(2):
+    max_attempts = 1 if getattr(ctx, "one_call_per_skill", False) else 2
+    for attempt in range(max_attempts):
         try:
+            usage["calls"] = usage.get("calls", 0) + 1
             args, u = ctx.caller(prompt, tool["name"], tool["description"], tool["schema"],
                                  model=ctx.model, reasoning_effort=effort or ctx.effort)
             for k in ("input_tokens", "output_tokens", "reasoning_tokens", "cached_tokens", "seconds"):
                 usage[k] = usage.get(k, 0) + (u or {}).get(k, 0)
-            usage["calls"] = usage.get("calls", 0) + 1
             return args
         except (ValueError, json.JSONDecodeError) as e:
             last = e
@@ -1039,18 +1258,58 @@ def _run_job_lean(job, ctx):
     usage = {}
     max_chunks, per_param_k, effort = _scale_for_skill(
         skill, ctx.max_chunks, ctx.per_param_k, ctx.effort, ctx.size_tiers)
-    selected, _ = ctx.retriever.retrieve_for_skill(skill, per_param_k, max_chunks)
-    stats = {"skill": skill.code, "chunks_sent": len(selected),
-             "chunk_tokens_est": sum(approx_tokens(c.text) for c in selected),
+    syn = dict(GLOBAL_SYNONYMS)
+    for k, v in (skill.synonyms or {}).items():
+        syn[k.lower()] = list(syn.get(k.lower(), [])) + list(v)
+    skill_for_retrieval = SimpleNamespace(param_sections=skill.param_sections, synonyms=syn)
+    selected, _ = ctx.retriever.retrieve_for_skill(skill_for_retrieval, per_param_k, max_chunks)
+    # Tables are sent independently of prose retrieval, so the chunk cap cannot
+    # remove an appendix/table row that triage did not select.
+    selected = [c for c in selected if c.kind != "table"]
+    all_table_chunks = list(getattr(ctx, "table_chunks", []))
+    table_routes = getattr(ctx, "table_routes", {})
+    process_code = skill.code.split("-")[0]
+    # A table enters a skill only when the paper links its caption/header
+    # material to that process. Unresolved tables are reported, never copied
+    # into every category's output.
+    table_chunks = [c for c in all_table_chunks
+                    if table_routes.get(c.table_id or c.id) == process_code]
+    xml_table_rows, table_header_maps, xml_table_errors = _extract_mapped_xml_table_rows(
+        table_chunks, skill, fixed_material=(materials[0] if materials and len(materials) == 1 else None))
+    # XML grids with taxonomy-matched headers are extracted deterministically.
+    # Keep the old model path only for legacy text tables that lack a structured
+    # XML grid; broad taxonomy calls added cost without recovering these rows.
+    # Send this process skill every table routed to it, including structured
+    # grids. Mapped values are extracted deterministically as well; the model
+    # can handle valid taxonomy concepts that do not map directly from a header.
+    table_api_chunks = list(table_chunks)
+    all_input_chunks = selected + table_chunks
+    model_input_chunks = selected + table_api_chunks
+    stats = {"skill": skill.code, "chunks_sent": len(selected) + len(table_api_chunks),
+             "prose_chunks_retrieved": len(selected),
+             "table_chunks_sent": len(table_api_chunks),
+             "table_chunks_from_xml": len(table_chunks),
+             "table_routing": {table_id: table_routes.get(table_id)
+                               for table_id in dict.fromkeys(c.table_id for c in all_table_chunks if c.table_id)},
+             "table_routing_diagnostics": getattr(ctx, "table_routing_diagnostics", {}),
+             "table_count": len({c.table_id for c in table_chunks if c.table_id}),
+             "chunk_tokens_est": sum(approx_tokens(c.text) for c in model_input_chunks),
              "n_params": len(_unique_params(skill)),
              "max_chunks_used": max_chunks, "per_param_k_used": per_param_k,
-             "reasoning_effort_used": effort}
-    if not selected:
+             "reasoning_effort_used": effort,
+             "xml_table_rows_extracted": len(xml_table_rows),
+             "xml_table_rows_verified": len(xml_table_rows),
+             "xml_table_verification_errors": xml_table_errors,
+             "table_header_mappings": {
+                 table_id: {str(index + 1): parameter for index, parameter in mapping.items()}
+                 for table_id, mapping in table_header_maps.items() if mapping
+             }}
+    if not all_input_chunks:
         stats.update(rows_raw=0, note="no chunks retrieved")
         return {"rows": [], "rejected": [], "dropped": [], "hollow": [], "missing": [],
                 "requested": [], "stats": stats, "usage": usage}
 
-    chunk_by_id = {c.id: c for c in selected}
+    chunk_by_id = {c.id: c for c in all_input_chunks}
     if materials is None:
         mode, fixed = "free", None
     elif len(materials) == 1:
@@ -1058,9 +1317,6 @@ def _run_job_lean(job, ctx):
     else:
         mode, fixed = "enum", None
 
-    syn = dict(GLOBAL_SYNONYMS)
-    for k, v in (skill.synonyms or {}).items():
-        syn[k.lower()] = list(syn.get(k.lower(), [])) + list(v)
     name_tokens = {}
     for p in _unique_params(skill):
         bare, _ = split_param(p)
@@ -1069,30 +1325,87 @@ def _run_job_lean(job, ctx):
             toks |= set(tokenize(s))
         name_tokens[p] = toks
 
-    # the retriever should see the same extended synonyms as the self-check
-    skill_for_retrieval = SimpleNamespace(param_sections=skill.param_sections, synonyms=syn)
-    if syn != (skill.synonyms or {}):
-        selected, _ = ctx.retriever.retrieve_for_skill(skill_for_retrieval, per_param_k, max_chunks)
-        chunk_by_id = {c.id: c for c in selected}
-        stats["chunks_sent"] = len(selected)
-        stats["chunk_tokens_est"] = sum(approx_tokens(c.text) for c in selected)
-
-    tool = build_extraction_tool(skill, [c.id for c in selected], mode, materials, ctx.source_kind,
-                                 extra_skill_codes=job.get("extra_codes", []))
     codes = ", ".join(job.get("extra_codes", []))
-    prompt = LEAN_PROMPT.format(
-        skill_name=skill.name, skill_code=skill.code,
-        material_block=_material_block(mode, materials),
-        review_block=REVIEW_BLOCK if ctx.source_kind == "review" else "",
-        skill_request_block=SKILL_REQUEST_BLOCK.format(codes=codes) if codes else "",
-        synonym_text=_synonym_text(skill), hints_text=skill.build_hints_text(),
-        excerpts=render_chunks(selected),
-    )
-    args = _call_model(ctx, prompt, tool, usage, effort=effort)
-    raw_rows = args.get("rows", []) or []
-    requested = list(args.get("additional_skills", []) or [])
+    table_skill = _load_table_extraction_skill()
 
-    rows = _dedupe_rows(_materialize(raw_rows, chunk_by_id, fixed, ctx.source_kind))
+    def make_call_parts(chunks):
+        has_tables = any(c.kind == "table" for c in chunks)
+        table_block = (
+            "TABLE-AWARE EXTRACTION PASS: inspect every table row assigned to this process skill. Use the "
+            "prose excerpts for prose-supported findings and to resolve table material/process context. "
+            "Cite the exact source chunk; table findings must quote the corresponding table row.\n\n"
+            + table_skill
+            if has_tables else ""
+        )
+        cited_chunk_ids = [c.id for c in chunks]
+        tool = build_extraction_tool(
+            skill, cited_chunk_ids, mode, materials, ctx.source_kind,
+            extra_skill_codes=job.get("extra_codes", []))
+        prompt = LEAN_PROMPT.format(
+            skill_name=skill.name, skill_code=skill.code,
+            material_block=_material_block(mode, materials),
+            table_block=table_block,
+            review_block=REVIEW_BLOCK if ctx.source_kind == "review" else "",
+            skill_request_block=SKILL_REQUEST_BLOCK.format(codes=codes) if codes else "",
+            synonym_text=_synonym_text(skill), hints_text=skill.build_hints_text(),
+            excerpts=render_chunks(chunks),
+        )
+        return prompt, tool
+
+    def fits_prompt_budget(chunks):
+        prompt, tool = make_call_parts(chunks)
+        schema = json.dumps(tool["schema"], ensure_ascii=False)
+        estimated = ((len(prompt) + len(schema) + 2) // 3) + EXTRACTION_TOKEN_ESTIMATE_MARGIN
+        return estimated <= EXTRACTION_INPUT_TOKEN_BUDGET
+
+    # One category call contains all routed table rows plus that skill's
+    # retrieved prose. If needed, trim the lowest-ranked prose excerpts to keep
+    # the complete table grid in the single request.
+    batch = list(table_api_chunks) + list(selected)
+    while selected and not fits_prompt_budget(batch):
+        batch.pop()
+        selected.pop()
+    if batch and not fits_prompt_budget(batch):
+        print(f"Warning: routed tables for {skill.code} exceed the one-call input budget; sending complete table grid anyway.")
+    stats["prose_chunks_retrieved"] = len(selected)
+    stats["chunks_sent"] = len(batch)
+    stats["chunk_tokens_est"] = sum(approx_tokens(c.text) for c in batch)
+    batches = [batch] if batch else []
+    raw_rows, requested, model_errors = [], [], []
+    for batch in batches:
+        prompt, tool = make_call_parts(batch)
+        try:
+            args = _call_model(ctx, prompt, tool, usage, effort=effort)
+        except Exception as e:
+            if not getattr(ctx, "one_call_per_skill", False):
+                raise
+            # Preserve deterministic XML rows even if the skill's one allowed
+            # model request fails; do not spend a fallback/retry call.
+            model_errors.append(str(e))
+            continue
+        raw_rows.extend(args.get("rows", []) or [])
+        requested.extend(args.get("additional_skills", []) or [])
+    requested = list(dict.fromkeys(requested))
+    stats["model_batches"] = len(batches)
+    stats["table_batches"] = 1 if table_api_chunks else 0
+    stats["table_context_chunks_sent"] = len(selected) if table_api_chunks else 0
+    if model_errors:
+        stats["model_errors"] = model_errors
+
+    model_rows = _materialize(raw_rows, chunk_by_id, fixed, ctx.source_kind)
+    xml_rejected = []
+    accepted_model_rows = []
+    for row in model_rows:
+        chunk = chunk_by_id.get(row.get("chunk_id"))
+        if chunk is not None and chunk.kind == "table":
+            mapping = table_header_maps.get(chunk.table_id, {})
+            error = verify_table_row_against_xml(row, chunk, mapping)
+            if error:
+                row["flag_reason"] = f"XML table verification: {error}"
+                xml_rejected.append(row)
+                continue
+        accepted_model_rows.append(row)
+    rows = _dedupe_rows(accepted_model_rows + xml_table_rows)
     hollow = [r for r in rows if _is_hollow_row(r, ctx.source_kind)]
     missing = [r for r in rows if _is_explicitly_missing(r)]
     rows = [r for r in rows if r not in hollow and r not in missing]
@@ -1109,7 +1422,9 @@ def _run_job_lean(job, ctx):
         return ok, bad
 
     accepted, rejected = check_all(rows)
-    stats.update(rows_raw=len(raw_rows), rejected_first_pass=len(rejected))
+    rejected.extend(xml_rejected)
+    stats.update(rows_raw=len(raw_rows), rows_from_xml=len(xml_table_rows),
+                 rejected_first_pass=len(rejected))
 
     dropped = []          # rejected rows the model chose to drop on repair (i.e. unsupported)
     repaired = 0
@@ -1132,7 +1447,19 @@ def _run_job_lean(job, ctx):
             print(f"Warning: repair call failed for {skill.code}: {e}")
             break
         new_rows = _dedupe_rows(_materialize(rargs.get("rows", []) or [], chunk_by_id, fixed, ctx.source_kind))
-        ok, bad = check_all(new_rows)
+        valid_new_rows = []
+        xml_bad_new_rows = []
+        for row in new_rows:
+            chunk = chunk_by_id.get(row.get("chunk_id"))
+            if chunk is not None and chunk.kind == "table":
+                error = verify_table_row_against_xml(row, chunk, table_header_maps.get(chunk.table_id, {}))
+                if error:
+                    row["flag_reason"] = f"XML table verification: {error}"
+                    xml_bad_new_rows.append(row)
+                    continue
+            valid_new_rows.append(row)
+        ok, bad = check_all(valid_new_rows)
+        bad.extend(xml_bad_new_rows)
         repaired += len(ok)
         touched = {(r["parameter"], r["chunk_id"]) for r in new_rows}
         dropped += [r for r in rejected if (r["parameter"], r["chunk_id"]) not in touched]
@@ -1227,6 +1554,16 @@ def _run_job(job, ctx):
             r["lean"] = dict(out["stats"], usage=out["usage"])
         return res, out["stats"], out["usage"], out["requested"]
     except Exception as e:  # noqa: BLE001 - any failure -> fixed path
+        if getattr(ctx, "one_call_per_skill", False):
+            # Keep the strict skill call budget: report the skill failure rather
+            # than silently making another model request through fixed fallback.
+            empty = {"rows": [], "rejected": [], "dropped": [], "hollow": [], "missing": [],
+                     "requested": [], "stats": {"skill": job["skill"].code,
+                                                  "one_call_error": str(e)}, "usage": {}}
+            res = _finalize(job["skill"], empty, job["materials"], ctx)
+            for r in res.values():
+                r["lean"] = dict(empty["stats"], usage=empty["usage"])
+            return res, empty["stats"], empty["usage"], []
         return _fallback_fixed(job, ctx, e)
 
 
@@ -1241,7 +1578,7 @@ def _resolve_skill(code, subtype_texts, skill_library, subtype_skill_library):
 
 def run_lean(triage_result, sectioned, skill_library, subtype_skill_library=None,
              model="gpt-5-mini", reasoning_effort="low", per_param_k=3, max_chunks=40,
-             retry_rounds=1, allow_skill_requests=True, max_extra_skills=1, max_workers=4,
+             retry_rounds=0, allow_skill_requests=False, max_extra_skills=1, max_workers=4,
              caller=None, out_path="agentic_lean_results.json",
              stats_path="agentic_lean_stats.json", size_tiers=None):
     """Lean equivalent of run_orchestrator. Returns (results, stats).
@@ -1259,16 +1596,32 @@ def run_lean(triage_result, sectioned, skill_library, subtype_skill_library=None
     t0 = time.time()
     source_kind = triage_result.get("_source_kind", "research-article")
     names = pick_section_names(triage_result, sectioned)
-    chunks = build_chunks(sectioned, names)
+    all_chunks = build_chunks(sectioned)
+    table_chunks = [c for c in all_chunks if c.kind == "table"]
+    prose_chunks = [c for c in all_chunks if c.kind != "table"]
+    table_routes, table_routing_diagnostics = _route_table_chunks_by_process(table_chunks, prose_chunks)
+    retrieval_chunks = [
+        replace(c, idx=i)
+        for i, c in enumerate(c for c in all_chunks
+                               if c.section in names and c.kind != "table")
+    ]
+    paper_text = normalize_spaces("\n\n".join(sectioned[n] for n in names))
+    if table_chunks:
+        paper_text += "\n\n" + normalize_spaces("\n\n".join(c.text for c in table_chunks))
     ctx = SimpleNamespace(
-        retriever=ChunkRetriever(chunks), source_kind=source_kind, model=model,
+        retriever=ChunkRetriever(retrieval_chunks), table_chunks=table_chunks,
+        table_routes=table_routes, table_routing_diagnostics=table_routing_diagnostics,
+        one_call_per_skill=True,
+        source_kind=source_kind, model=model,
         effort=reasoning_effort, per_param_k=per_param_k, max_chunks=max_chunks,
         size_tiers=size_tiers or DEFAULT_SIZE_TIERS,
         retry_rounds=retry_rounds, caller=caller or llm_pipeline.call_gpt_mini_tool_ex,
-        paper_text=normalize_spaces("\n\n".join(sectioned[n] for n in names)),
+        paper_text=paper_text,
     )
-    print(f"Lean: {len(chunks)} chunks (~{sum(approx_tokens(c.text) for c in chunks)} tokens) "
-          f"from {len(names)} sections | source kind: {source_kind}")
+    print(f"Lean: {len(retrieval_chunks)} prose chunks + {len(table_chunks)} table rows "
+          f"(~{sum(approx_tokens(c.text) for c in retrieval_chunks + table_chunks)} tokens) "
+          f"from {len(names)} triage-selected sections plus all document tables | source kind: {source_kind}")
+    print("Table process routing: " + json.dumps(table_routing_diagnostics, ensure_ascii=False))
 
     # ---- build jobs (same resolution rules as run_orchestrator) ----
     printed = triage_result.get("printed_materials", [])
@@ -1345,7 +1698,7 @@ def run_lean(triage_result, sectioned, skill_library, subtype_skill_library=None
              "jobs": [s for _, s, _, _ in outputs],
              "reasoning_effort": reasoning_effort,   # BASE effort requested; a job may have run
              "reasoning_effort_is_base_only": True,  # at a HIGHER effort - see jobs[i].reasoning_effort_used
-             "chunks_total": len(chunks)}
+             "chunks_total": len(all_chunks), "table_chunks_total": len(table_chunks)}
     json.dump(results, open(out_path, "w"), indent=2, ensure_ascii=False)
     json.dump(stats, open(stats_path, "w"), indent=2)
     return results, stats
@@ -1428,9 +1781,12 @@ if __name__ == "__main__":
                     help="reasoning effort for the LEAN path (fixed keeps the model default)")
     ap.add_argument("--per-param-k", type=int, default=3)
     ap.add_argument("--max-chunks", type=int, default=40)
-    ap.add_argument("--retry-rounds", type=int, default=1)
+    ap.add_argument("--retry-rounds", type=int, default=0,
+                    help="repair rounds per skill (default: 0 to keep one API call per skill)")
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--no-skill-requests", action="store_true")
+    ap.add_argument("--allow-skill-requests", action="store_true",
+                    help="allow category skills to request another skill (off by default for process-pure runs)")
     ap.add_argument("--triage-json", help="reuse a saved triage_result.json instead of calling the LLM again")
     args = ap.parse_args()
 
@@ -1477,7 +1833,8 @@ if __name__ == "__main__":
         return run_lean(triage, sectioned, skill_library, subtype_skill_library, model="gpt-5-mini",
                         reasoning_effort=args.effort, per_param_k=args.per_param_k,
                         max_chunks=args.max_chunks, retry_rounds=args.retry_rounds,
-                        allow_skill_requests=not args.no_skill_requests, max_workers=args.workers)
+                        allow_skill_requests=args.allow_skill_requests and not args.no_skill_requests,
+                        max_workers=args.workers)
 
     if args.mode == "fixed":
         print("\n--- Running category skills (fixed) ---")

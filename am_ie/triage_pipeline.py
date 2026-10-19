@@ -55,23 +55,56 @@ class TablePreservingExtractor(HTMLParser):
         self._in_heading = False
         self._heading_buf = []
         self._in_table = False
+        self.tables = []
+        self._in_thead = False
+        self._colspec_map = {}
+        self._row_is_header = False
         self._in_cell = False
         self._cell_buf = []
         self._row = []
         self._rows = []
+        self._cell_attrs = {}
+        self._cell_is_header = False
         self._caption = ""
         self._in_caption = False
         self._caption_buf = []
+        self._in_appendices = False
+        self._appendix_section_depth = 0
+        self._in_appendix_label = False
+        self._appendix_label_buf = []
 
     def handle_starttag(self, tag, attrs):
         t = _local_tag(tag)
-        if t in HEADING_TAGS:
+        attr_map = {str(k).lower(): (v or "") for k, v in attrs}
+        if t == "appendices":
+            self._in_appendices = True
+        elif self._in_appendices and t == "section":
+            self._appendix_section_depth += 1
+        elif (self._in_appendices and self._appendix_section_depth == 1
+              and not self._in_table and t == "label"):
+            self._in_appendix_label = True
+            self._appendix_label_buf = []
+        elif t in HEADING_TAGS:
             self._in_heading = True
             self._heading_buf = []
         elif t == "table":
             self._in_table = True
             self._rows = []
             self._caption = ""
+            self._in_thead = False
+            self._colspec_map = {}
+        elif self._in_table and t == "thead":
+            self._in_thead = True
+        elif self._in_table and t in ("tbody", "tfoot"):
+            self._in_thead = False
+        elif self._in_table and t == "colspec":
+            name = attr_map.get("colname")
+            try:
+                number = int(attr_map.get("colnum") or len(self._colspec_map) + 1)
+            except (TypeError, ValueError):
+                number = len(self._colspec_map) + 1
+            if name:
+                self._colspec_map[name] = max(0, number - 1)
         elif t == "caption":
             self._in_caption = True
             self._caption_buf = []
@@ -79,13 +112,35 @@ class TablePreservingExtractor(HTMLParser):
             self._row = []        # "tr" = HTML. Without "row" here, any paper using CALS tables
                                   # (<tgroup><row><entry>...) has every table silently dropped:
                                   # _rows never gets a row boundary, stays empty, _emit_table() bails.
+            self._row_is_header = self._in_thead or attr_map.get("role", "").lower() in {
+                "header", "columnheader", "colheader"
+            }
         elif t in ("td", "th", "entry"):
             self._in_cell = True
             self._cell_buf = []
+            self._cell_attrs = attr_map
+            self._cell_is_header = (
+                t == "th" or self._in_thead or
+                attr_map.get("role", "").lower() in {"header", "columnheader", "colheader"} or
+                attr_map.get("scope", "").lower() in {"col", "colgroup"}
+            )
 
     def handle_endtag(self, tag):
         t = _local_tag(tag)
-        if t in HEADING_TAGS and self._in_heading:
+        if t == "label" and self._in_appendix_label:
+            label = " ".join(self._appendix_label_buf).strip()
+            self._in_appendix_label = False
+            if label:
+                self.current_section = label
+                if label not in self.sections:
+                    self.sections[label] = []
+                    self.order.append(label)
+        elif self._in_appendices and t == "section" and self._appendix_section_depth:
+            self._appendix_section_depth -= 1
+        elif t == "appendices":
+            self._in_appendices = False
+            self._appendix_section_depth = 0
+        elif t in HEADING_TAGS and self._in_heading:
             heading = " ".join(self._heading_buf).strip()
             self._in_heading = False
             if heading:
@@ -97,12 +152,22 @@ class TablePreservingExtractor(HTMLParser):
             self._caption = " ".join(self._caption_buf).strip()
             self._in_caption = False
         elif t in ("td", "th", "entry") and self._in_cell:
-            self._row.append(" ".join(self._cell_buf).strip())
+            self._row.append({
+                "text": " ".join(self._cell_buf).strip(),
+                "header": self._cell_is_header,
+                "attrs": self._cell_attrs,
+            })
             self._in_cell = False
         elif t in ("tr", "row"):
             if self._row:
-                self._rows.append(self._row)
+                self._rows.append({
+                    "cells": self._row,
+                    "header": self._row_is_header or all(c["header"] for c in self._row),
+                    "in_thead": self._in_thead,
+                })
             self._row = []
+        elif t == "thead" and self._in_table:
+            self._in_thead = False
         elif t == "table":
             self._in_table = False
             self._emit_table()
@@ -111,7 +176,9 @@ class TablePreservingExtractor(HTMLParser):
         text = data.strip()
         if not text:
             return
-        if self._in_heading:
+        if self._in_appendix_label:
+            self._appendix_label_buf.append(text)
+        elif self._in_heading:
             self._heading_buf.append(text)
         elif self._in_cell:
             self._cell_buf.append(text)
@@ -123,17 +190,112 @@ class TablePreservingExtractor(HTMLParser):
     def _emit_table(self):
         if not self._rows:
             return
-        lines = []
-        if self._caption:
-            lines.append(f"[TABLE: {self._caption}]")
-        else:
-            lines.append("[TABLE]")
-        # First row = column headers (best-effort)
-        header = self._rows[0]
-        lines.append("Columns: " + " | ".join(header))
-        for r in self._rows[1:]:
-            lines.append("Row: " + " | ".join(r))
+        table_id = f"t{len(self.tables) + 1:04d}"
+        expanded = _expand_xml_table_rows(self._rows, self._colspec_map)
+        header_indices = [i for i, row in enumerate(self._rows) if row["in_thead"]]
+        if not header_indices:
+            header_indices = [i for i, row in enumerate(self._rows) if row["header"]]
+        if not header_indices:
+            header_indices = [0]
+
+        width = max((len(row) for row in expanded), default=0)
+        headers = []
+        for column in range(width):
+            parts = []
+            for row_index in header_indices:
+                value = expanded[row_index][column].strip() if column < len(expanded[row_index]) else ""
+                if value and (not parts or value.casefold() != parts[-1].casefold()):
+                    parts.append(value)
+            headers.append(" ".join(parts))
+
+        header_set = set(header_indices)
+        data_rows = []
+        for row_index, cells in enumerate(expanded):
+            if row_index in header_set:
+                continue
+            padded = cells + [""] * (width - len(cells))
+            data_rows.append({
+                "xml_row": row_index + 1,
+                "cells": padded,
+                "values": {headers[i]: padded[i] for i in range(width) if headers[i]},
+            })
+
+        grid = {
+            "id": table_id,
+            "section": self.current_section,
+            "caption": self._caption,
+            "headers": headers,
+            "header_rows": [i + 1 for i in header_indices],
+            "rows": data_rows,
+            "source": "xml",
+        }
+        self.tables.append(grid)
+
+        lines = [f"[TABLE: {self._caption}]" if self._caption else "[TABLE]"]
+        lines.append("Columns: " + " | ".join(headers))
+        for row in data_rows:
+            lines.append("Row: " + " | ".join(row["cells"]))
         self.sections[self.current_section].append("\n".join(lines))
+
+
+def _expand_xml_table_rows(rows, colspec_map=None):
+    """Expand XML rowspan/colspan cells into a rectangular row-by-column grid."""
+    colspec_map = colspec_map or {}
+    expanded = []
+    pending = {}  # column index -> (text, additional rows remaining)
+    for row in rows:
+        occupied = {column: value for column, (value, _) in pending.items()}
+        next_pending = {
+            column: (value, remaining - 1)
+            for column, (value, remaining) in pending.items() if remaining > 1
+        }
+        cursor = 0
+        for cell in row["cells"]:
+            attrs = cell.get("attrs", {})
+            try:
+                colspan = max(1, int(attrs.get("colspan") or attrs.get("namest_span") or 1))
+            except (TypeError, ValueError):
+                colspan = 1
+            try:
+                rowspan = max(1, int(attrs.get("rowspan") or 1))
+            except (TypeError, ValueError):
+                rowspan = 1
+            if attrs.get("morerows"):
+                try:
+                    rowspan = max(rowspan, int(attrs["morerows"]) + 1)
+                except (TypeError, ValueError):
+                    pass
+
+            start_name, end_name = attrs.get("namest"), attrs.get("nameend")
+            if start_name in colspec_map:
+                cursor = colspec_map[start_name]
+                if end_name in colspec_map:
+                    colspan = max(1, colspec_map[end_name] - cursor + 1)
+            elif attrs.get("colname") in colspec_map:
+                cursor = colspec_map[attrs["colname"]]
+
+            while any(column in occupied for column in range(cursor, cursor + colspan)):
+                cursor += 1
+            value = cell.get("text", "")
+            for column in range(cursor, cursor + colspan):
+                occupied[column] = value
+                if rowspan > 1:
+                    next_pending[column] = (value, rowspan - 1)
+            cursor += colspan
+
+        width = max(occupied, default=-1) + 1
+        expanded.append([occupied.get(column, "") for column in range(width)])
+        pending = next_pending
+
+    width = max((len(row) for row in expanded), default=0)
+    return [row + [""] * (width - len(row)) for row in expanded]
+
+
+class SectionedDocument(dict):
+    """Section text plus XML-preserved table grids for downstream verification."""
+    def __init__(self, *args, tables=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.tables = tables or []
 
 class SectionAwareExtractor(HTMLParser):
     """
@@ -184,7 +346,7 @@ def strip_markup_sectioned(raw_markup):
         joined = "\n".join(parser.sections[name]).strip()
         if joined:
             result[name] = joined
-    return result
+    return SectionedDocument(result, tables=parser.tables)
 
 def strip_markup(raw_markup):
     """Flat version (no section boundaries) — kept for backward compatibility."""
@@ -919,4 +1081,4 @@ if __name__ == "__main__":
     triage, sectioned = run_triage(sample_markup, model=model, host=args.host, backend=args.backend)
     relevant_text = get_relevant_text(triage, sectioned)
     print("\n--- TEXT TO SEND TO STAGE-2 EXTRACTOR ---")
-    print(relevant_text[:2000], "..." if len(relevant_text) > 2000 else "") 
+    print(relevant_text[:2000], "..." if len(relevant_text) > 2000 else "")
