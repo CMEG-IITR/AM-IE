@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "status": "pending_human_adjudication",
-  "description": "Three-paper harness pilot. Existing server.json files and saved outputs are candidate references, not verified gold labels.",
+  "status": "reviewed_subsets_pending_completeness_review",
+  "description": "Three-paper pilot. The new reference files are manually checked subsets of source-supported rows; full-paper completeness remains unadjudicated, so accuracy metrics are intentionally not reported.",
   "cases": [
     {
       "process_category": "PBF",
@@ -9,7 +9,10 @@
       "candidate_reference": "papers/ibrahim/ran/1/server.json",
       "previous_run": "harness_runs/pilot/20261019T181713Z_10.1016_j.addma.2026.105077",
       "latest_pilot_run": "harness_runs/pilot/20261019T182140Z_10.1016_j.addma.2026.105077",
-      "adjudication_status": "pending"
+      "adjudication_status": "human_reviewed_subset",
+      "reviewed_reference": "evaluation/references/pbf-reviewed-subset.json",
+      "latest_run": "harness_runs/adjudicated/20261019T185914Z_10.1016_j.addma.2026.105077",
+      "reviewed_reference_status": "human_reviewed_subset"
     },
     {
       "process_category": "MEX",
@@ -17,7 +20,10 @@
       "candidate_reference": "papers/ibrahim/ran/4/server.json",
       "previous_run": "harness_runs/pilot/20261019T181751Z_10.1016_j.aca.2019.10.075",
       "latest_pilot_run": "harness_runs/pilot/20261019T182217Z_10.1016_j.aca.2019.10.075",
-      "adjudication_status": "pending"
+      "adjudication_status": "human_reviewed_subset",
+      "reviewed_reference": "evaluation/references/mex-reviewed-subset.json",
+      "latest_run": "harness_runs/adjudicated/20261019T190747Z_10.1016_j.aca.2019.10.075",
+      "reviewed_reference_status": "human_reviewed_subset"
     },
     {
       "process_category": "VPP",
@@ -25,7 +31,15 @@
       "candidate_reference": "papers/ibrahim/ran_1/4/server.json",
       "previous_run": "harness_runs/pilot/20261019T181819Z_10.1016_j.actaastro.2024.04.017",
       "latest_pilot_run": "harness_runs/pilot/20261019T182258Z_10.1016_j.actaastro.2024.04.017",
-      "adjudication_status": "pending"
+      "adjudication_status": "human_reviewed_subset",
+      "reviewed_reference": "evaluation/references/vpp-reviewed-subset.json",
+      "latest_run": "harness_runs/adjudicated/20261019T190834Z_10.1016_j.actaastro.2024.04.017",
+      "reviewed_reference_status": "human_reviewed_subset",
+      "latest_attempt": {
+        "run": "harness_runs/adjudicated/20261019T191122Z_10.1016_j.actaastro.2024.04.017",
+        "status": "failed",
+        "reason": "OpenAI daily request limit reached before extraction rows were returned"
+      }
     }
   ]
 }

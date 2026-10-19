@@ -1,0 +1,72 @@
+{
+  "materials": [
+    {
+      "material": "Black PLA",
+      "material_form": "",
+      "quote": "Black PLA material and transparent PLA (Matter Hackers, CA, USA) was used to print the flow-detector as our testing solution consisted of orange G prepared in aqueous solvent."
+    },
+    {
+      "material": "transparent PLA (Matter Hackers, CA, USA)",
+      "material_form": "",
+      "quote": "Black PLA material and transparent PLA (Matter Hackers, CA, USA) was used to print the flow-detector as our testing solution consisted of orange G prepared in aqueous solvent."
+    }
+  ],
+  "extracted_parameters": [
+    {
+      "parameter": "Machine Make/Model",
+      "value": "Felix 3.0, Felix robotics, the Netherlands",
+      "unit": "",
+      "material": "",
+      "quote": "An FDM printer (Felix 3.0, Felix robotics, the Netherlands) used for the fabrication of the flow cell."
+    },
+    {
+      "parameter": "Machine/Robot Type",
+      "value": "A multi-material 3D printer with dual nozzles",
+      "unit": "",
+      "material": "",
+      "quote": "A multi-material 3D printer with dual nozzles allowed printing of the device body with an opaque material, black PLA, and the transparent detection window, transparent PLA."
+    },
+    {
+      "parameter": "Nozzle Temperature (°C)",
+      "value": "210",
+      "unit": "°C",
+      "material": "",
+      "quote": "The extruder temperature was 210 °C, the print bed was 70 °C."
+    },
+    {
+      "parameter": "Bed Temperature (°C)",
+      "value": "70",
+      "unit": "°C",
+      "material": "",
+      "quote": "The extruder temperature was 210 °C, the print bed was 70 °C."
+    },
+    {
+      "parameter": "Layer Height (mm)",
+      "value": "150",
+      "unit": "μm",
+      "material": "transparent PLA (Matter Hackers, CA, USA)",
+      "quote": "Therefore, to print the transparent part of the flow cell, a layer thickness of 150 μm was chosen to provide a relatively smooth surface because of the presence of fewer number of layers and therefore fewer grooves."
+    },
+    {
+      "parameter": "Print Speed (mm/s)",
+      "value": "50",
+      "unit": "mm/sec",
+      "material": "",
+      "quote": "The printing speed was kept at 50 mm/sec."
+    },
+    {
+      "parameter": "Build Orientation",
+      "value": "parallel to the slit i.e. XY direction",
+      "unit": "",
+      "material": "",
+      "quote": "Based on our previous work on printing orientation optimisation for the fabrication of slit for photometric detection assembly [ 4 ], the printing direction was kept parallel to the slit i.e. XY direction."
+    },
+    {
+      "parameter": "Machine/Robot Type",
+      "value": "FDM printer",
+      "unit": "",
+      "material": "",
+      "quote": "An FDM printer (Felix 3.0, Felix robotics, the Netherlands) used for the fabrication of the flow cell."
+    }
+  ]
+}

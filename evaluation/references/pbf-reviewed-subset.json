@@ -1,0 +1,95 @@
+{
+  "materials": [
+    {
+      "material": "nickel-based superalloy IN718",
+      "material_form": "",
+      "quote": "The parts were produced of the nickel-based superalloy IN718 on two different PBF-LB/M machines."
+    }
+  ],
+  "extracted_parameters": [
+    {
+      "parameter": "Machine Make/Model",
+      "value": "M280",
+      "unit": "",
+      "material": "nickel-based superalloy IN718",
+      "quote": "While the Overheating build job was manufactured on the first PBF-LB/M machine (M280, EOS GmbH, Germany), the remaining build jobs were conducted on the second PBF-LB/M machine (M290, EOS GmbH, Germany)."
+    },
+    {
+      "parameter": "Machine Make/Model",
+      "value": "M290",
+      "unit": "",
+      "material": "nickel-based superalloy IN718",
+      "quote": "While the Overheating build job was manufactured on the first PBF-LB/M machine (M280, EOS GmbH, Germany), the remaining build jobs were conducted on the second PBF-LB/M machine (M290, EOS GmbH, Germany)."
+    },
+    {
+      "parameter": "Chamber Atmosphere (Ar/N2)",
+      "value": "Argon",
+      "unit": "",
+      "material": "nickel-based superalloy IN718",
+      "quote": "The parts were processed under an inert gas atmosphere using Argon."
+    },
+    {
+      "parameter": "Build Plate Pre-heat (°C)",
+      "value": "353.15",
+      "unit": "K",
+      "material": "nickel-based superalloy IN718",
+      "quote": "The build plate preheating temperature was set to 353.15 K."
+    },
+    {
+      "parameter": "Layer Thickness (µm)",
+      "value": "40",
+      "unit": "µm",
+      "material": "nickel-based superalloy IN718",
+      "quote": "Each layer, with a height of 40 µm, of the build jobs was monitored by an OT system (EOSTATE Exposure OT, EOS GmbH, Germany) with a total pixel distribution of 2050 × 2050 px (M280) and 2000 × 2000 px (M290)."
+    },
+    {
+      "parameter": "Laser Power (W)",
+      "value": "90",
+      "unit": "%",
+      "material": "nickel-based superalloy IN718",
+      "quote": "The parts were manufactured with laser powers of 90%, 100%, and 110%, with 100% corresponding to the standard laser power."
+    },
+    {
+      "parameter": "Laser Power (W)",
+      "value": "100",
+      "unit": "%",
+      "material": "nickel-based superalloy IN718",
+      "quote": "The parts were manufactured with laser powers of 90%, 100%, and 110%, with 100% corresponding to the standard laser power."
+    },
+    {
+      "parameter": "Laser Power (W)",
+      "value": "110",
+      "unit": "%",
+      "material": "nickel-based superalloy IN718",
+      "quote": "The parts were manufactured with laser powers of 90%, 100%, and 110%, with 100% corresponding to the standard laser power."
+    },
+    {
+      "parameter": "Laser Power (W)",
+      "value": "ranging from 80% to 108% in steps of 4%",
+      "unit": "",
+      "material": "nickel-based superalloy IN718",
+      "quote": "The parts on the build plate were manufactured with differing laser powers, ranging from 80% to 108% in steps of 4%, where 100% corresponded to the standard parameter set."
+    },
+    {
+      "parameter": "Laser Power (W)",
+      "value": "80",
+      "unit": "%",
+      "material": "nickel-based superalloy IN718",
+      "quote": "Besides the standard laser power, modified laser powers with decreased values of 80% (part Image 1008), increased values of 104% (part Image 1009), and medium values of 88% (part Image 1010) were captured with a similar precision, as the difference images indicate."
+    },
+    {
+      "parameter": "Laser Power (W)",
+      "value": "104",
+      "unit": "%",
+      "material": "nickel-based superalloy IN718",
+      "quote": "Besides the standard laser power, modified laser powers with decreased values of 80% (part Image 1008), increased values of 104% (part Image 1009), and medium values of 88% (part Image 1010) were captured with a similar precision, as the difference images indicate."
+    },
+    {
+      "parameter": "Laser Power (W)",
+      "value": "88",
+      "unit": "%",
+      "material": "nickel-based superalloy IN718",
+      "quote": "Besides the standard laser power, modified laser powers with decreased values of 80% (part Image 1008), increased values of 104% (part Image 1009), and medium values of 88% (part Image 1010) were captured with a similar precision, as the difference images indicate."
+    }
+  ]
+}

@@ -418,6 +418,11 @@ Rules:
     fraction, or mixing ratio for the feedstock, include it in "material" with
     the number and unit as written. Do not round, guess, or add composition
     the paper does not state.
+  - Keep the material name concise. Do not append particle-size ranges,
+    loading values, wavelength values, or other process/property measurements
+    to the material name; those belong in extraction rows.
+  - Do not infer a form such as powder, filament, resin, or wire from the AM
+    process alone; include it only when the paper states it.
   - List the BUILD MATERIAL only — the thing physically fed into the 3D
     printer (resin/powder/filament/wire/paste/etc). This is almost always
     ONE material. List a SECOND entry ONLY if the paper genuinely compares
@@ -428,9 +433,13 @@ Rules:
     step. Ask yourself: "did this go INTO the printer?" If no, leave it out.
   - Each entry's process_category/process_subtype describe HOW THAT SPECIFIC
     MATERIAL was processed.
-  - If you cannot identify any material that was actually printed (e.g. a pure
-    literature review with no build material of its own), return an empty
-    list — do not force an entry.
+  - Inspect the supplied Materials/Methods, Parameter specification, Shaping,
+    and feedstock sections before returning an empty list. The material may
+    be named outside the abstract or introduction.
+  - A product/component name, printer, optical system, build layer, or a
+    generic process mechanism is not itself a feedstock material.
+  - If the source does not explicitly identify a material actually fed to the
+    printer, return an empty list — do not infer a composition.
 
 PAPER TEXT:
 {front_text}
@@ -539,14 +548,15 @@ def build_front_text(sectioned, max_abstract=3000, max_intro=3000, max_fallback=
     return "\n\n".join(parts)
 
 
-def build_methods_text(sectioned, max_chars=1500, max_sections=3):
-    """Used only when the opening text yielded no printed material: the first
-    few Methods/Materials-style sections, truncated."""
+def build_methods_text(sectioned, max_chars=2500, max_sections=6):
+    """Select material/process specification sections for material routing."""
     parts = []
+    hints = (*METHODS_SECTION_HINTS, "parameter", "process", "shaping",
+             "feedstock", "powder", "filament", "resin", "nozzle", "ceram")
     for name, text in sectioned.items():
         if name == "body" or _is_noise_section(name):
             continue
-        if any(h in name.lower() for h in METHODS_SECTION_HINTS):
+        if any(h in name.lower() for h in hints):
             parts.append(f"[SECTION: {name}]\n{text[:max_chars]}")
             if len(parts) >= max_sections:
                 break

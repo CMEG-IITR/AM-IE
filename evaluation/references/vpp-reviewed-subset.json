@@ -1,0 +1,128 @@
+{
+  "materials": [
+    {
+      "material": "highly particle-filled suspension",
+      "material_form": "other",
+      "quote": "This technology is based on a bottom-up approach and on the selective photo polymerization via digital light processing (DLP) in a highly particle-filled suspension (typical particle sizes: between 0.04 and 5 μm; typical ceramic content: 35–50 vol.-%) by irradiation with blue light (wavelength: 450–465 nm)."
+    },
+    {
+      "material": "alumina",
+      "material_form": "",
+      "quote": "Fig. 4 shows a ceramic aerospike nozzle for 10 N thrust made of alumina using CerAM VPP in three different views."
+    }
+  ],
+  "extracted_parameters": [
+    {
+      "parameter": "Size Range (µm)",
+      "value": "between 0.04 and 5",
+      "unit": "μm",
+      "material": "highly particle-filled suspension",
+      "quote": "This technology is based on a bottom-up approach and on the selective photo polymerization via digital light processing (DLP) in a highly particle-filled suspension (typical particle sizes: between 0.04 and 5 μm; typical ceramic content: 35–50 vol.-%) by irradiation with blue light (wavelength: 450–465 nm)."
+    },
+    {
+      "parameter": "Ceramic Solid Loading (vol%)",
+      "value": "35–50",
+      "unit": "vol.-%",
+      "material": "highly particle-filled suspension",
+      "quote": "This technology is based on a bottom-up approach and on the selective photo polymerization via digital light processing (DLP) in a highly particle-filled suspension (typical particle sizes: between 0.04 and 5 μm; typical ceramic content: 35–50 vol.-%) by irradiation with blue light (wavelength: 450–465 nm)."
+    },
+    {
+      "parameter": "Cure Wavelength (nm)",
+      "value": "450–465",
+      "unit": "nm",
+      "material": "highly particle-filled suspension",
+      "quote": "This technology is based on a bottom-up approach and on the selective photo polymerization via digital light processing (DLP) in a highly particle-filled suspension (typical particle sizes: between 0.04 and 5 μm; typical ceramic content: 35–50 vol.-%) by irradiation with blue light (wavelength: 450–465 nm)."
+    },
+    {
+      "parameter": "Layer Thickness (µm)",
+      "value": "10 μm–100 μm",
+      "unit": "μm",
+      "material": "highly particle-filled suspension",
+      "quote": "Typical layer thicknesses are in the range of 10 μm–100 μm, the thickness of the suspension layer is typically approx. 200 μm if a layer with a thickness of 25 μm should be realized."
+    },
+    {
+      "parameter": "Layer Thickness (µm)",
+      "value": "25 μm",
+      "unit": "μm",
+      "material": "highly particle-filled suspension",
+      "quote": "Typical layer thicknesses are in the range of 10 μm–100 μm, the thickness of the suspension layer is typically approx. 200 μm if a layer with a thickness of 25 μm should be realized."
+    },
+    {
+      "parameter": "Projector Resolution (µm/px)",
+      "value": "40",
+      "unit": "μm",
+      "material": "",
+      "quote": "Using a dedicated optical system, the projected image is generated via a DMD in high resolution (min. 1920 × 1080 pixels), to realize 40 μm pixel size in the x-y plane and a minimum wall thickness of as low as 80 μm in the sintered components."
+    },
+    {
+      "parameter": "Min Feature Size (µm)",
+      "value": "80",
+      "unit": "μm",
+      "material": "",
+      "quote": "Using a dedicated optical system, the projected image is generated via a DMD in high resolution (min. 1920 × 1080 pixels), to realize 40 μm pixel size in the x-y plane and a minimum wall thickness of as low as 80 μm in the sintered components."
+    },
+    {
+      "parameter": "Dimensional Accuracy (mm)",
+      "value": "0.04 mm–0.1 mm",
+      "unit": "mm",
+      "material": "",
+      "quote": "The achievable tolerances are in the range of 0.04 mm–0.1 mm and planar sintered surfaces have typically a Ra-value between 0.4 and 1 μm [25]."
+    },
+    {
+      "parameter": "Surface Roughness Ra (µm)",
+      "value": "between 0.4 and 1 μm",
+      "unit": "μm",
+      "material": "",
+      "quote": "The achievable tolerances are in the range of 0.04 mm–0.1 mm and planar sintered surfaces have typically a R a -value between 0.4 and 1 μm [25]."
+    },
+    {
+      "parameter": "Ceramic Type (Alumina/Zirconia)",
+      "value": "alumina",
+      "unit": "",
+      "material": "alumina",
+      "quote": "Fig. 4 shows a ceramic aerospike nozzle for 10 N thrust made of alumina using CerAM VPP in three different views."
+    },
+    {
+      "parameter": "Debinding Cycle",
+      "value": "4–10 K/h",
+      "unit": "K/h",
+      "material": "",
+      "quote": "Therefore, a conservative heating profile with heating rates in a range of 4–10 K/h and various dwell levels times of 3–10 h were used (Fig. 2) in combination with a protective gas furnace of MUT."
+    },
+    {
+      "parameter": "Debinding Cycle",
+      "value": "3–10 h",
+      "unit": "h",
+      "material": "",
+      "quote": "Therefore, a conservative heating profile with heating rates in a range of 4–10 K/h and various dwell levels times of 3–10 h were used (Fig. 2) in combination with a protective gas furnace of MUT."
+    },
+    {
+      "parameter": "Sintering Temp (°C)",
+      "value": "1650 °C",
+      "unit": "°C",
+      "material": "",
+      "quote": "The sintering of the debinded components were done in an air sintering furnace (Nabertherm) up to a maximum sintering temperature of 1650 °C following the profile illustrated in Fig. 3 to achieve almost complete densification (porosity below 1 %)."
+    },
+    {
+      "parameter": "Part Geometry",
+      "value": "ceramic aerospike nozzle",
+      "unit": "",
+      "material": "alumina",
+      "quote": "Fig. 4 shows a ceramic aerospike nozzle for 10 N thrust made of alumina using CerAM VPP in three different views."
+    },
+    {
+      "parameter": "Atmosphere (Ar/N2/Vacuum)",
+      "value": "nitrogen atmosphere",
+      "unit": "",
+      "material": "",
+      "quote": "The debinding of the components was done in nitrogen atmosphere."
+    },
+    {
+      "parameter": "Porosity (%)",
+      "value": "below 1 %",
+      "unit": "%",
+      "material": "",
+      "quote": "The sintering of the debinded components were done in an air sintering furnace (Nabertherm) up to a maximum sintering temperature of 1650 °C following the profile illustrated in Fig. 3 to achieve almost complete densification (porosity below 1 %)."
+    }
+  ]
+}

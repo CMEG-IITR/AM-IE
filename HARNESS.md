@@ -59,11 +59,10 @@ For each paper, score extraction against adjudicated rows and report precision,
 recall, quote/evidence validity, material attribution, and empty-result
 correctness alongside calls, tokens, and elapsed time.
 
-The local pilot set is listed in `evaluation/benchmark_manifest.json`. Its
-existing `server.json` files are candidate references and remain marked
-pending until a person checks their completeness, taxonomy mapping, units,
-quotes, and material links against the paper. Compare a run without claiming
-accuracy using:
+The local pilot set is listed in `evaluation/benchmark_manifest.json`.
+Manually checked source-supported subsets are in `evaluation/references/`;
+they are not exhaustive references, so completeness and accuracy remain
+unadjudicated. Compare a run without claiming accuracy using:
 
 ```bash
 python -m am_ie.harness_eval harness_runs/pilot/<run-id> \
@@ -72,9 +71,11 @@ python -m am_ie.harness_eval harness_runs/pilot/<run-id> \
 
 The report is written to that run folder as `comparison.json`; it includes
 reference audits, matched and differing rows, material-name differences, and
-whether each cited value and quote appears in the paper. Only pass
-`--reference-status human_reviewed` after a person has completed that review;
-then the report also includes exact-match precision, recall, and F1.
+whether each cited value and quote appears in the paper. Use
+`--reference-status human_reviewed_subset` for these checked subsets; this
+does not calculate accuracy metrics. Only pass `--reference-status
+human_reviewed` after a person has checked both row correctness and full-paper
+completeness; then the report includes exact-match precision, recall, and F1.
 
 Compare one harness change at a time. Hold the paper set, taxonomy, model,
 reasoning effort, and call/token budget fixed; repeat stochastic runs and

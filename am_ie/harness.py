@@ -147,6 +147,17 @@ def run(paper_path, vocab_path="vocab_tree.json", output_root="harness_runs",
             out_path=str(run_dir / "extraction.json"),
             stats_path=str(run_dir / "stats.json"),
         )
+        failed_model_calls = [
+            call for job in stats.get("jobs", [])
+            for call in job.get("model_calls", [])
+            if call.get("status") == "failed"
+        ]
+        if failed_model_calls:
+            first = failed_model_calls[0].get("error", {})
+            raise RuntimeError(
+                f"{len(failed_model_calls)} extraction model call(s) failed; "
+                f"first error: {first.get('type', 'unknown')}: {first.get('message', '')}"
+            )
         extraction_usage = stats.get("usage", {})
         usage_fields = (
             "calls", "input_tokens", "output_tokens", "reasoning_tokens",

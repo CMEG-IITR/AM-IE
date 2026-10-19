@@ -41,6 +41,7 @@ def _norm_text(value):
     value = unicodedata.normalize("NFKC", str(value or ""))
     value = value.replace("–", "-").replace("—", "-").replace("−", "-")
     value = value.replace("μ", "u").replace("µ", "u")
+    value = re.sub(r"\bu\s+m\b", "um", value)
     value = re.sub(r"\s+", " ", value).strip().rstrip(".,;:!?…")
     return value.casefold()
 
@@ -56,7 +57,7 @@ def _canonical_parameter(parameter, vocabulary):
 
 def _numbers(value):
     normalized = _norm_text(value)
-    normalized = re.sub(r"(?<=\d)-(?=\d)", " ", normalized)
+    normalized = re.sub(r"(?<=\d)(?:\s*[a-z°/%·]+)?-\s*(?=\d)", " ", normalized)
     return re.findall(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[-+]?\d+)?", normalized)
 
 
@@ -89,11 +90,11 @@ def _content_key(row, vocabulary):
     return _row_key(row, vocabulary)[:2]
 
 
-def _extracted_rows(extraction):
+def _extracted_rows(extraction, statuses=("verified", "flagged")):
     rows = []
     for skill_result in extraction.values():
         params = skill_result.get("parameters", {})
-        for status in ("verified", "flagged"):
+        for status in statuses:
             for row in params.get(status, []):
                 rows.append({**row, "harness_status": status})
     return rows
@@ -139,10 +140,22 @@ def compare_run(run_dir, reference_path, vocabulary_path="vocab_flat.json",
     extraction = _read_json(run_dir / "extraction.json")
     reference = _read_json(reference_path)
     vocabulary = _read_json(Path(vocabulary_path).resolve())
+    tree_path = Path("vocab_tree.json").resolve()
+    taxonomy_names = set(vocabulary)
+    if tree_path.is_file():
+        tree = _read_json(tree_path)
+        for category in tree.values():
+            for params in category.get("params", {}).values():
+                if isinstance(params, dict):
+                    for nested in params.values():
+                        taxonomy_names.update(nested)
+                else:
+                    taxonomy_names.update(params)
     paper = Path(manifest["inputs"]["paper"]["path"])
     paper_text = _paper_text(paper)
 
-    predicted = _extracted_rows(extraction)
+    predicted = _extracted_rows(extraction, statuses=("verified",))
+    flagged = _extracted_rows(extraction, statuses=("flagged",))
     expected = reference.get("extracted_parameters", [])
     pred_index = {}
     exp_index = {}
@@ -183,7 +196,10 @@ def compare_run(run_dir, reference_path, vocabulary_path="vocab_flat.json",
             "value": row.get("value", ""),
             "unit": row.get("unit", ""),
             "material": row.get("material", ""),
-            "parameter_in_taxonomy": _canonical_parameter(row.get("parameter", ""), vocabulary) in vocabulary,
+            "parameter_in_taxonomy": (
+                _canonical_parameter(row.get("parameter", ""), vocabulary) in vocabulary
+                or row.get("parameter", "") in taxonomy_names
+            ),
             "value_in_quote": _value_in_text(row.get("value", ""), row.get("quote", "")),
             "value_components_supported": _value_components_supported(row, row.get("quote", "")),
             "quote_in_paper": _quote_in_paper(row.get("quote", ""), paper_text),
@@ -212,6 +228,7 @@ def compare_run(run_dir, reference_path, vocabulary_path="vocab_flat.json",
         "metrics": metrics,
         "row_counts": {
             "reference": reference_count, "predicted": prediction_count,
+            "flagged_predictions": len(flagged),
             "content_matched_ignoring_material": matched_content_count,
             "fully_matched_including_material": matched_count,
             "reference_only": sum(len(exp_content_index[k]) for k in expected_only_keys),
@@ -220,6 +237,7 @@ def compare_run(run_dir, reference_path, vocabulary_path="vocab_flat.json",
             "prediction_only_including_material": sum(len(rows) for k, rows in pred_index.items() if k not in exp_index),
         },
         "matched_rows": [display(k, pred_index[k][0]) for k in matched_keys],
+        "flagged_predictions": [display(_row_key(row, vocabulary), row) for row in flagged],
         "content_matched_rows": [
             {"reference": display(_row_key(exp_content_index[k][0], vocabulary), exp_content_index[k][0]),
              "prediction": display(_row_key(pred_content_index[k][0], vocabulary), pred_content_index[k][0]),
@@ -252,7 +270,7 @@ def main(argv=None):
     parser.add_argument("run_dir", help="Completed harness run directory")
     parser.add_argument("--reference", required=True, help="Reference JSON in the server.json shape")
     parser.add_argument("--vocab", default="vocab_flat.json")
-    parser.add_argument("--reference-status", choices=("candidate_unreviewed", "human_reviewed"),
+    parser.add_argument("--reference-status", choices=("candidate_unreviewed", "human_reviewed_subset", "human_reviewed"),
                         default="candidate_unreviewed")
     parser.add_argument("--output", help="Report path (default: <run_dir>/comparison.json)")
     args = parser.parse_args(argv)

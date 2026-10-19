@@ -138,6 +138,15 @@ def build_subtype_skill_library(vocab_tree_path="vocab_tree.json"):
                 if sec in data["params"]:
                     param_sections[sec] = data["params"][sec]
             param_sections.update(shared)  # shared sections (post-processing etc.) always included
+            if l2_code == "VPP-DLP":
+                # Size Range is a shared taxonomy parameter used for ceramic
+                # feedstocks, but older local vocab_tree.json files do not
+                # place it under VPP. Keep it in the DLP ceramic feedstock skill.
+                ceramic_section = "Feedstock Properties — Ceramic-Loaded Resin"
+                if ceramic_section in param_sections and "Size Range (µm)" not in param_sections[ceramic_section]:
+                    param_sections[ceramic_section] = [
+                        *param_sections[ceramic_section], "Size Range (µm)",
+                    ]
 
             merged_synonyms = {**parent_specifics["synonyms"], **overrides["synonyms"]}
             merged_hints = parent_specifics["domain_hints"] + overrides["domain_hints"]
@@ -150,6 +159,13 @@ def build_subtype_skill_library(vocab_tree_path="vocab_tree.json"):
                 domain_hints=merged_hints,
             )
     return skills
+
+
+SUBTYPE_ALIASES = {
+    # CerAM VPP uses the name Lithography-based Ceramic Manufacturing (LCM)
+    # for its DLP-based ceramic process.
+    "VPP-DLP": ("LCM", "Lithography-based Ceramic Manufacturing"),
+}
 
 
 def match_subtype(category_code, process_subtypes, subtype_skills):
@@ -172,7 +188,11 @@ def match_subtype(category_code, process_subtypes, subtype_skills):
         for l2_code, skill in candidates.items():
             suffix = l2_code.split("-", 1)[1].lower()  # e.g. "sla", "dlp"
             name_lower = skill.name.lower().replace(" ", "").replace("-", "")
-            if suffix in text_lower or text_lower in name_lower:
+            aliases = (alias.lower().replace(" ", "").replace("-", "")
+                       for alias in SUBTYPE_ALIASES.get(l2_code, ()))
+            if suffix in text_lower or text_lower in name_lower or any(
+                alias in text_lower for alias in aliases
+            ):
                 return skill
     return None
 
@@ -190,7 +210,11 @@ def find_subtype_anywhere(process_subtypes, subtype_skills):
         for l2_code, skill in subtype_skills.items():
             suffix = l2_code.split("-", 1)[1].lower()
             name_lower = skill.name.lower().replace(" ", "").replace("-", "")
-            if suffix in text_lower or text_lower in name_lower:
+            aliases = (alias.lower().replace(" ", "").replace("-", "")
+                       for alias in SUBTYPE_ALIASES.get(l2_code, ()))
+            if suffix in text_lower or text_lower in name_lower or any(
+                alias in text_lower for alias in aliases
+            ):
                 return skill
     return None
 
@@ -242,6 +266,9 @@ this pass is about "{target_material}" specifically, processed via
 mentioned in the paper (e.g. reagents, solvents, or a second material the
 paper compares against) — only {target_material}. Because the material is
 fixed, do NOT include a "material" field in your output rows.
+If the cited sentence limits a value to a different named material, sample,
+or sub-part, omit it for this target even if it appears in the same paper.
+Do not transfer a sub-part-specific setting to every build material by default.
 
 Extract every value from the paper below that matches a parameter in this
 skill's taxonomy AND belongs to {target_material}'s process. Return ONLY
@@ -780,8 +807,11 @@ def build_extraction_tool(skill, chunk_ids, material_mode, materials, source_kin
         "chunk_id": {"type": "string", "enum": list(chunk_ids),
                      "description": "The single excerpt that contains the value."},
     }
-    if material_mode == "enum":
-        props["material"] = {"type": "string", "enum": list(materials)}
+    if material_mode in ("single", "enum"):
+        props["material"] = {
+            "type": "string", "enum": [*materials, ""],
+            "description": "Use a listed material only when the excerpt ties this value to it; use an empty string when the value is general or the association is unclear.",
+        }
     elif material_mode == "free":
         props["material"] = {"type": "string",
                              "description": "Material this value belongs to, as named in the excerpts; empty string if unclear."}
@@ -867,13 +897,18 @@ EXCERPTS:
 
 def _material_block(material_mode, materials):
     if material_mode == "single":
-        return (f'The build material is ALREADY IDENTIFIED: everything you extract is about "{materials[0]}". '
-                f'Skip values that clearly belong to another material (reagents, solvents, a comparison material).\n')
+        return (f'The paper identifies "{materials[0]}" as a build material. For each row, set material to '
+                f'"{materials[0]}" only when the cited excerpt ties the value to it; use an empty string for '
+                'process-wide values or unclear associations. Skip values limited to another material, sample, '
+                'or sub-part. Do not transfer a sub-part-specific setting to every build material by default.\n')
     if material_mode == "enum":
         return ("The paper prints these materials: " + "; ".join(f'"{m}"' for m in materials) +
-                '. Set "material" to the one each value belongs to; if a value applies to several, emit one row per material.\n')
-    return ('Material is not pinned: set "material" to the material each value belongs to, as named in the excerpts '
-            '(empty string if unclear).\n')
+                '. Set "material" only when the excerpt ties the value to a listed material; if it applies to '
+                'several, emit one row per material. Use an empty string for process-wide values or unclear links.\n')
+    return ('Material is not pinned. Set "material" only to an explicitly named feedstock or printed material '
+            'that the excerpt connects to this value; use an empty string when that connection is unclear. '
+            'Do not use a printer, optical system, DMD, layer, suspension layer, sintered component, or part '
+            'geometry as a material. A generic process statement may have an empty material.\n')
 
 
 def _synonym_text(skill):
@@ -936,7 +971,26 @@ def self_check_row(row, chunk, name_tokens):
         return f"unknown chunk id {row.get('chunk_id')!r}"
     if not value_in_text(value, chunk.quote):
         return f"value '{value}' does not appear verbatim in chunk {chunk.id}"
-    bare, unit = split_param(row["parameter"])
+    parameter = row["parameter"]
+    quote_lower = chunk.quote.casefold()
+    required_evidence = {
+        "Build Plate Pre-heat (°C)": (
+            "preheating temperature", "pre-heat temperature", "preheat temperature",
+        ),
+        "Projector Resolution (µm/px)": (
+            "pixel size", "µm/px", "μm/px", "um/px",
+        ),
+    }.get(parameter, ())
+    if required_evidence and not any(term in quote_lower for term in required_evidence):
+        return f"quote does not identify the value as {parameter}"
+    if parameter.startswith("Layer Thickness"):
+        value_text = str(value or "")
+        start = quote_lower.find(value_text.casefold())
+        if start >= 0 and "suspension layer is typically" in quote_lower[max(0, start - 55):start]:
+            return "value is the suspension-coating layer thickness, not the realized layer thickness"
+        if re.search(r"(?:printers?|systems?) allow printing layers ranging", quote_lower):
+            return "value describes a general printer capability range, not a setting used for this study"
+    bare, unit = split_param(parameter)
     nums = parse_numbers(value)
     if nums:
         prob = range_problem(row["parameter"], unit, nums)
@@ -1536,6 +1590,45 @@ def _finalize(skill, out, materials, ctx):
     pinned = materials is not None
     if pinned:
         known = set(materials)
+        generic_feedstock = (
+            len(materials) == 1
+            and any(term in materials[0].casefold() for term in ("suspension", "slurry"))
+        )
+        generic_material_words = {
+            "material", "powder", "filament", "resin", "suspension", "highly",
+            "particle", "filled", "ceramic", "photopolymer", "mainly", "with",
+        }
+
+        def explicit_material_matches(row):
+            quote = re.sub(r"\s+", " ", str(row.get("quote", ""))).casefold()
+            direct = [m for m in materials if re.sub(
+                r"\s+", " ", re.sub(r"\([^)]*\)", " ", m),
+            ).strip().casefold() in quote]
+            if direct:
+                return direct
+            quote_words = set(re.findall(r"[a-z0-9-]+", quote))
+            material_matches = []
+            for material in materials:
+                name = re.sub(r"\([^)]*\)", " ", material).casefold()
+                tokens = {t for t in re.findall(r"[a-z0-9-]+", name)
+                          if len(t) > 2 and t not in generic_material_words}
+                if tokens & quote_words:
+                    material_matches.append(material)
+            return material_matches
+
+        for row in accepted + out["rejected"]:
+            row_material = row.get("material", "")
+            if row_material and row_material not in known:
+                row["material"] = ""
+            matches = explicit_material_matches(row)
+            if len(matches) > 1:
+                row["material"] = ""
+            elif len(matches) == 1 and row.get("material") != matches[0]:
+                row["material"] = matches[0]
+            elif generic_feedstock and row.get("material") in known:
+                quote = str(row.get("quote", "")).casefold()
+                if not any(term in quote for term in ("suspension", "slurry", "feedstock")):
+                    row["material"] = ""
     else:
         low = ctx.paper_text.lower()
         known = {r["material"] for r in accepted if r["material"] and r["material"].lower() in low}
@@ -1572,6 +1665,20 @@ def _finalize(skill, out, materials, ctx):
                     "missing": [r for r in out["missing"] if r["material"] == m],
                     "hollow_discarded": [r for r in out["hollow"] if r["material"] == m],
                     "self_check_dropped": [r for r in out["dropped"] if r["material"] == m],
+                },
+            }
+        unassigned_verified = [r for r in verified if not r.get("material")]
+        unassigned_flagged = [r for r in flagged if not r.get("material")]
+        if unassigned_verified or unassigned_flagged:
+            results[None] = {
+                "skill": skill.code, "material": None,
+                "materials": {"verified": [], "flagged": []},
+                "parameters": {
+                    "verified": unassigned_verified,
+                    "flagged": unassigned_flagged,
+                    "missing": [r for r in out["missing"] if not r.get("material")],
+                    "hollow_discarded": [r for r in out["hollow"] if not r.get("material")],
+                    "self_check_dropped": [r for r in out["dropped"] if not r.get("material")],
                 },
             }
     else:

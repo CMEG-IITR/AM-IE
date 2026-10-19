@@ -1,0 +1,29 @@
+{
+  "printed_materials": [
+    {
+      "material": "highly particle-filled suspension",
+      "process_category": "VPP",
+      "process_subtype": "Lithography-based Ceramic Manufacturing (LCM)"
+    }
+  ],
+  "relevant_sections": [
+    "CerAMfacturing = AM of ceramics",
+    "CerAMfacturing in general",
+    "CerAM VPP (vat photo-polymerization)",
+    "Used equipment for CerAM VPP",
+    "Shaping",
+    "Debinding",
+    "Sintering",
+    "Ceramic aerospike engine cerAMfactured by CerAM VPP",
+    "Assessment of sintered structures via CT",
+    "Assessment of sintered structures concerning surface quality",
+    "Performance of CerAMfactured aerospike nozzles"
+  ],
+  "process_categories": [
+    "VPP"
+  ],
+  "process_subtypes": [
+    "Lithography-based Ceramic Manufacturing (LCM)"
+  ],
+  "_source_kind": "research-article"
+}
