@@ -19,8 +19,8 @@ not a hard filter, since the unpinned (review / no-printed-materials) lean path
 can leave material blank or paraphrased.
 
 Usage:
-    python compare_vs_ground_truth.py /path/to/ran/ran
-    python compare_vs_ground_truth.py /path/to/ran/ran --show-misses 20 --show-extra 10
+    python -m am_ie.compare_vs_ground_truth /path/to/ran/ran
+    python -m am_ie.compare_vs_ground_truth /path/to/ran/ran --show-misses 20 --show-extra 10
 """
 import argparse
 import json

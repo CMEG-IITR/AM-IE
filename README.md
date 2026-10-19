@@ -6,8 +6,8 @@ Tools for extracting additive manufacturing parameters from research papers.
 
 - `am_ie/` contains the pipeline, retrieval, normalization, classification, and comparison modules.
 - `am_ie/skills/<skill-name>/SKILL.md` contains one extraction skill per process category and configured subtype. Each file uses the standard `name` and `description` frontmatter; category parameters still come from `vocab_tree.json`.
-- The Python files in the repository root are compatibility launchers for the package modules. Existing commands such as `python agentic_pipeline.py` continue to work.
-- `old/` contains the earlier extraction and vocabulary-building scripts.
+- `scripts/compat/` contains legacy command wrappers for the package modules. Run them as `python scripts/compat/agentic_pipeline.py`.
+- `legacy/` contains the earlier standalone extraction and vocabulary-building scripts.
 - `vocab_flat.json` and `vocab_tree.json` are generated vocabulary data used by the pipelines.
 - `papers/` is for local source papers and is excluded from Git.
 - Generated extraction and comparison outputs are excluded from Git.
@@ -17,11 +17,11 @@ Tools for extracting additive manufacturing parameters from research papers.
 Run these from the repository root so the default vocabulary and data paths resolve:
 
 ```bash
-python agentic_pipeline.py
-python triage_pipeline.py
-python chunk_retrieval.py paper.xml
-python compare_vs_ground_truth.py path/to/papers
-python json_to_csv.py agentic_extraction_results.json
+python -m am_ie.agentic_pipeline
+python -m am_ie.triage_pipeline
+python -m am_ie.chunk_retrieval paper.xml
+python -m am_ie.compare_vs_ground_truth path/to/papers
+python -m am_ie.json_to_csv agentic_extraction_results.json
 ```
 
 ## Harness runs
