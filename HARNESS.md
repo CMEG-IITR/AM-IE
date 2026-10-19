@@ -39,6 +39,11 @@ directory. The bundle contains:
 - `sections.json`: parsed section text and structured XML table grids.
 - `material_classification.json`: symbolic material/property routing.
 - `extraction.json` and `stats.json`: verified/flagged rows and per-job usage.
+- `trajectory.json`: ordered stage outcomes, triage decisions, retrieval/extraction
+  jobs, per-stage usage, and result counts. Failed runs identify their failing
+  stage in `manifest.json`.
+- Per-skill stats include retrieved chunk IDs by parameter, sent chunk metadata,
+  prompt/schema fingerprints, model-call outcomes, and verifier decisions.
 
 Failed runs retain a manifest with the error and any artifacts written before
 failure. To replay extraction without another triage call, pass
@@ -53,6 +58,23 @@ and adjudicated expected rows. Keep that set outside generated run folders.
 For each paper, score extraction against adjudicated rows and report precision,
 recall, quote/evidence validity, material attribution, and empty-result
 correctness alongside calls, tokens, and elapsed time.
+
+The local pilot set is listed in `evaluation/benchmark_manifest.json`. Its
+existing `server.json` files are candidate references and remain marked
+pending until a person checks their completeness, taxonomy mapping, units,
+quotes, and material links against the paper. Compare a run without claiming
+accuracy using:
+
+```bash
+python -m am_ie.harness_eval harness_runs/pilot/<run-id> \
+  --reference papers/ibrahim/ran/1/server.json
+```
+
+The report is written to that run folder as `comparison.json`; it includes
+reference audits, matched and differing rows, material-name differences, and
+whether each cited value and quote appears in the paper. Only pass
+`--reference-status human_reviewed` after a person has completed that review;
+then the report also includes exact-match precision, recall, and F1.
 
 Compare one harness change at a time. Hold the paper set, taxonomy, model,
 reasoning effort, and call/token budget fixed; repeat stochastic runs and

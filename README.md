@@ -39,5 +39,10 @@ material classification, extraction, and run statistics. Use `--triage-json`
 to replay extraction from a saved triage result. Existing pipeline commands
 remain available for baseline comparisons.
 
+Compare a completed run with a reference JSON using
+`python -m am_ie.harness_eval harness_runs/<run-id> --reference path/to/server.json`.
+Reference files are treated as unreviewed candidates by default; mark one as
+human reviewed only after checking it against the paper.
+
 Set `OPENAI_API_KEY` in the environment before running commands that call the OpenAI API. Local credentials belong in `.env`, which is ignored by Git.
 

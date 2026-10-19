@@ -259,6 +259,23 @@ def _quote_in_paper(quote, paper_text, ngram=6):
             return True
     return False
 
+
+def value_in_text(value, text):
+    """Match a value literally, with a fallback for terminal punctuation.
+
+    Model output sometimes attaches sentence punctuation to a value (for
+    example, ``150 μm.`` when the source says ``150 μm``). Exact matching is
+    tried first; only punctuation at the very end may be ignored.
+    """
+    value = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = re.sub(r"\s+", " ", str(text or ""))
+    if not value:
+        return False
+    if value.casefold() in text.casefold():
+        return True
+    trimmed = value.rstrip(".,;:!?…")
+    return bool(trimmed and trimmed.casefold() in text.casefold())
+
 def verify_materials(materials, paper_text):
     verified, flagged = [], []
     for row in materials:
@@ -286,8 +303,8 @@ def verify_parameters(extracted_parameters, paper_text, known_materials,
             flagged.append(row)
             continue
 
-        value_in_paper = value.lower() in paper_text.lower()
-        value_in_quote = bool(quote.strip()) and value.lower() in quote.lower()
+        value_in_paper = value_in_text(value, paper_text)
+        value_in_quote = bool(quote.strip()) and value_in_text(value, quote)
         value_in_context = bool(context.strip()) and value.lower() in context.lower()
 
         if source_kind == "review":

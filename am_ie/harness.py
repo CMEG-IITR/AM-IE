@@ -101,12 +101,14 @@ def run(paper_path, vocab_path="vocab_tree.json", output_root="harness_runs",
     manifest_path = run_dir / "manifest.json"
     _write_json(manifest_path, manifest)
 
+    active_stage = "parse"
     try:
         # Start a fresh usage window before any model-backed stage. Triage
         # calls are recorded by call_gpt_mini_tool; extraction usage is
         # returned directly by run_lean and is combined below.
         llm_pipeline.USAGE_LOG.clear()
         raw_markup = paper.read_text(encoding="utf-8")
+        active_stage = "triage"
         if triage_path:
             triage_file = Path(triage_path).resolve()
             triage = json.loads(triage_file.read_text(encoding="utf-8"))
@@ -125,12 +127,14 @@ def run(paper_path, vocab_path="vocab_tree.json", output_root="harness_runs",
             "tables": getattr(sectioned, "tables", []),
         })
 
+        active_stage = "material_classification"
         skill_library = agentic_pipeline.build_skill_library(str(vocab))
         subtype_library = agentic_pipeline.build_subtype_skill_library(str(vocab))
         material = classify_material(triage, scan_text="\n\n".join(sectioned.values()))
         _write_json(run_dir / "material_classification.json", material)
 
         triage_usage = llm_pipeline.summarize_usage(llm_pipeline.USAGE_LOG)
+        active_stage = "retrieve_extract_verify"
         results, stats = agentic_pipeline.run_lean(
             triage, sectioned, skill_library, subtype_library,
             model=config.model,
@@ -157,6 +161,44 @@ def run(paper_path, vocab_path="vocab_tree.json", output_root="harness_runs",
             for field in usage_fields
         }
         _write_json(run_dir / "stats.json", stats)
+        _write_json(run_dir / "trajectory.json", {
+            "schema_version": 1,
+            "run_id": run_dir.name,
+            "stages": [
+                {
+                    "stage": "parse",
+                    "status": "complete",
+                    "section_names": list(sectioned.keys()),
+                    "section_count": len(sectioned),
+                    "table_count": len(getattr(sectioned, "tables", [])),
+                },
+                {
+                    "stage": "triage",
+                    "status": "complete",
+                    "backend": "saved_triage" if triage_path else config.triage_backend,
+                    "process_categories": triage.get("process_categories", []),
+                    "process_subtypes": triage.get("process_subtypes", []),
+                    "printed_materials": triage.get("printed_materials", []),
+                    "relevant_sections": triage.get("relevant_sections", []),
+                    "usage": triage_usage,
+                },
+                {
+                    "stage": "material_classification",
+                    "status": "complete",
+                    "result": material,
+                },
+                {
+                    "stage": "retrieve_extract_verify",
+                    "status": "complete",
+                    "jobs": stats.get("jobs", []),
+                    "usage": extraction_usage,
+                    "result_counts": {
+                        "verified_rows": sum(len(r.get("parameters", {}).get("verified", [])) for r in results.values()),
+                        "flagged_rows": sum(len(r.get("parameters", {}).get("flagged", [])) for r in results.values()),
+                    },
+                },
+            ],
+        })
         manifest["status"] = "complete"
         manifest["finished_at"] = datetime.now(timezone.utc).isoformat()
         manifest["elapsed_seconds"] = round(time.time() - started, 2)
@@ -171,6 +213,7 @@ def run(paper_path, vocab_path="vocab_tree.json", output_root="harness_runs",
         return run_dir, results, stats
     except Exception as error:
         manifest["status"] = "failed"
+        manifest["failed_stage"] = active_stage
         manifest["finished_at"] = datetime.now(timezone.utc).isoformat()
         manifest["elapsed_seconds"] = round(time.time() - started, 2)
         manifest["error"] = {"type": type(error).__name__, "message": str(error)}

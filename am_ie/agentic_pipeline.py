@@ -15,11 +15,13 @@ Flow:
      call scoped to that skill's taxonomy subtree; oversized table sets batch.
   4. Results merged, each row tagged with which skill produced it.
 """
+import hashlib
 import json
 from pathlib import Path
 from dataclasses import dataclass, field, replace
 
-from .llm_pipeline import call_gpt_mini, parse_response, verify_materials, verify_parameters
+from .llm_pipeline import (call_gpt_mini, parse_response, verify_materials,
+                           verify_parameters, value_in_text)
 
 
 # ---------- 1. Skill definition ----------
@@ -923,7 +925,7 @@ def _norm_unit(u):
 
 def self_check_row(row, chunk, name_tokens):
     """None if the row passes, else a short reason (this text is sent back to the model).
-      1. value appears verbatim in the cited chunk        (same test verify_parameters uses)
+      1. value appears in the cited chunk (terminal punctuation may differ)
       2. numeric values sit in a physically plausible range for the unit
       3. parameters with a real unit are supported by the chunk: it either has a
          number in that unit, or contains a word from the parameter name/synonyms
@@ -932,7 +934,7 @@ def self_check_row(row, chunk, name_tokens):
     value = row.get("value", "")
     if chunk is None:
         return f"unknown chunk id {row.get('chunk_id')!r}"
-    if value.lower() not in chunk.quote.lower():
+    if not value_in_text(value, chunk.quote):
         return f"value '{value}' does not appear verbatim in chunk {chunk.id}"
     bare, unit = split_param(row["parameter"])
     nums = parse_numbers(value)
@@ -1262,7 +1264,9 @@ def _run_job_lean(job, ctx):
     for k, v in (skill.synonyms or {}).items():
         syn[k.lower()] = list(syn.get(k.lower(), [])) + list(v)
     skill_for_retrieval = SimpleNamespace(param_sections=skill.param_sections, synonyms=syn)
-    selected, _ = ctx.retriever.retrieve_for_skill(skill_for_retrieval, per_param_k, max_chunks)
+    selected, retrieved_by_parameter = ctx.retriever.retrieve_for_skill(
+        skill_for_retrieval, per_param_k, max_chunks,
+    )
     # Tables are sent independently of prose retrieval, so the chunk cap cannot
     # remove an appendix/table row that triage did not select.
     selected = [c for c in selected if c.kind != "table"]
@@ -1287,7 +1291,10 @@ def _run_job_lean(job, ctx):
     model_input_chunks = selected + table_api_chunks
     stats = {"skill": skill.code, "chunks_sent": len(selected) + len(table_api_chunks),
              "prose_chunks_retrieved": len(selected),
+             "retrieved_chunk_ids_by_parameter": retrieved_by_parameter,
+             "retrieved_prose_chunk_ids": [c.id for c in selected],
              "table_chunks_sent": len(table_api_chunks),
+             "table_chunk_ids": [c.id for c in table_api_chunks],
              "table_chunks_from_xml": len(table_chunks),
              "table_routing": {table_id: table_routes.get(table_id)
                                for table_id in dict.fromkeys(c.table_id for c in all_table_chunks if c.table_id)},
@@ -1352,6 +1359,35 @@ def _run_job_lean(job, ctx):
         )
         return prompt, tool
 
+    def recorded_call(prompt, tool, chunks, purpose):
+        before = dict(usage)
+        record = {
+            "purpose": purpose,
+            "chunk_ids": [c.id for c in chunks],
+            "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+            "tool_schema_sha256": hashlib.sha256(
+                json.dumps(tool["schema"], ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest(),
+        }
+        try:
+            args = _call_model(ctx, prompt, tool, usage, effort=effort)
+        except Exception as error:
+            record["status"] = "failed"
+            record["error"] = {"type": type(error).__name__, "message": str(error)}
+            record["usage"] = {
+                key: usage.get(key, 0) - before.get(key, 0) for key in usage
+            }
+            stats.setdefault("model_calls", []).append(record)
+            raise
+        record["status"] = "complete"
+        record["rows_returned"] = len(args.get("rows", []) or [])
+        record["additional_skills_requested"] = args.get("additional_skills", []) or []
+        record["usage"] = {
+            key: usage.get(key, 0) - before.get(key, 0) for key in usage
+        }
+        stats.setdefault("model_calls", []).append(record)
+        return args
+
     def fits_prompt_budget(chunks):
         prompt, tool = make_call_parts(chunks)
         schema = json.dumps(tool["schema"], ensure_ascii=False)
@@ -1370,12 +1406,19 @@ def _run_job_lean(job, ctx):
     stats["prose_chunks_retrieved"] = len(selected)
     stats["chunks_sent"] = len(batch)
     stats["chunk_tokens_est"] = sum(approx_tokens(c.text) for c in batch)
+    stats["prose_chunk_ids_sent"] = [c.id for c in selected]
+    stats["table_chunk_ids_sent"] = [c.id for c in table_api_chunks]
+    stats["chunks_sent_metadata"] = [
+        {"chunk_id": c.id, "section": c.section, "kind": c.kind,
+         "table_id": c.table_id}
+        for c in batch
+    ]
     batches = [batch] if batch else []
     raw_rows, requested, model_errors = [], [], []
     for batch in batches:
         prompt, tool = make_call_parts(batch)
         try:
-            args = _call_model(ctx, prompt, tool, usage, effort=effort)
+            args = recorded_call(prompt, tool, batch, "extract")
         except Exception as e:
             if not getattr(ctx, "one_call_per_skill", False):
                 raise
@@ -1442,7 +1485,8 @@ def _run_job_lean(job, ctx):
         rprompt = REPAIR_PROMPT.format(problems=problems,
                                        excerpts=render_chunks([chunk_by_id[i] for i in rej_ids]))
         try:
-            rargs = _call_model(ctx, rprompt, rtool, usage, effort=effort)
+            repair_chunks = [chunk_by_id[i] for i in rej_ids]
+            rargs = recorded_call(rprompt, rtool, repair_chunks, "repair")
         except RuntimeError as e:
             print(f"Warning: repair call failed for {skill.code}: {e}")
             break
@@ -1468,6 +1512,17 @@ def _run_job_lean(job, ctx):
         accepted += ok
         rejected = bad
     stats.update(repaired_ok=repaired, dropped_on_repair=len(dropped), still_flagged=len(rejected))
+    rejection_reasons = {}
+    for row in rejected:
+        reason = row.get("flag_reason", "unspecified")
+        rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+    stats["verification"] = {
+        "accepted_rows": len(accepted),
+        "rejected_rows": len(rejected),
+        "rejection_reasons": rejection_reasons,
+        "xml_table_rows": len(xml_table_rows),
+        "xml_table_rejected_rows": len(xml_rejected),
+    }
     for r in rejected:
         r["retried"] = ctx.retry_rounds > 0
 

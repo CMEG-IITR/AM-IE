@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "status": "pending_human_adjudication",
+  "description": "Three-paper harness pilot. Existing server.json files and saved outputs are candidate references, not verified gold labels.",
+  "cases": [
+    {
+      "process_category": "PBF",
+      "paper": "papers/ibrahim/ran/1/10.1016_j.addma.2026.105077.xml",
+      "candidate_reference": "papers/ibrahim/ran/1/server.json",
+      "previous_run": "harness_runs/pilot/20261019T181713Z_10.1016_j.addma.2026.105077",
+      "latest_pilot_run": "harness_runs/pilot/20261019T182140Z_10.1016_j.addma.2026.105077",
+      "adjudication_status": "pending"
+    },
+    {
+      "process_category": "MEX",
+      "paper": "papers/ibrahim/ran/4/10.1016_j.aca.2019.10.075.xml",
+      "candidate_reference": "papers/ibrahim/ran/4/server.json",
+      "previous_run": "harness_runs/pilot/20261019T181751Z_10.1016_j.aca.2019.10.075",
+      "latest_pilot_run": "harness_runs/pilot/20261019T182217Z_10.1016_j.aca.2019.10.075",
+      "adjudication_status": "pending"
+    },
+    {
+      "process_category": "VPP",
+      "paper": "papers/ibrahim/ran_1/4/10.1016_j.actaastro.2024.04.017.xml",
+      "candidate_reference": "papers/ibrahim/ran_1/4/server.json",
+      "previous_run": "harness_runs/pilot/20261019T181819Z_10.1016_j.actaastro.2024.04.017",
+      "latest_pilot_run": "harness_runs/pilot/20261019T182258Z_10.1016_j.actaastro.2024.04.017",
+      "adjudication_status": "pending"
+    }
+  ]
+}
