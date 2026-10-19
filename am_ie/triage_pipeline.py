@@ -931,7 +931,8 @@ def _dedupe(seq):
 
 
 def run_triage(raw_markup_or_text, is_markup=True, model="gpt-5-mini",
-                host="http://localhost:11434", backend="gpt5mini"):
+                host="http://localhost:11434", backend="gpt5mini",
+                output_path="triage_result.json"):
     """Returns (triage, sectioned). triage contains:
 
       printed_materials  [{material, process_category, process_subtype}]  (LLM pass 1)
@@ -985,7 +986,7 @@ def run_triage(raw_markup_or_text, is_markup=True, model="gpt-5-mini",
         "process_subtypes": _dedupe(e.get("process_subtype") for e in printed),
         "_source_kind": source_kind,
     }
-    json.dump(triage, open("triage_result.json", "w"), indent=2)
+    json.dump(triage, open(output_path, "w"), indent=2)
     print(json.dumps(triage, indent=2))
     return triage, sectioned
 

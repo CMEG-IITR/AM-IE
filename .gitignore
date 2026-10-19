@@ -232,3 +232,4 @@ extraction_results.json
 *_comparison.json
 triage_result.json
 ab_results/
+harness_runs/

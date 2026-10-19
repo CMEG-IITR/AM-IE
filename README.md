@@ -24,5 +24,20 @@ python compare_vs_ground_truth.py path/to/papers
 python json_to_csv.py agentic_extraction_results.json
 ```
 
+## Harness runs
+
+Use the run harness to execute triage and extraction with per-run artifacts,
+input fingerprints, settings, usage, and failure status:
+
+```bash
+python -m am_ie.harness papers/paper.xml --vocab vocab_tree.json
+```
+
+Each run is written under `harness_runs/<timestamp>_<paper>/`. The directory
+contains the manifest, triage result, parsed sections and tables, symbolic
+material classification, extraction, and run statistics. Use `--triage-json`
+to replay extraction from a saved triage result. Existing pipeline commands
+remain available for baseline comparisons.
+
 Set `OPENAI_API_KEY` in the environment before running commands that call the OpenAI API. Local credentials belong in `.env`, which is ignored by Git.
 
