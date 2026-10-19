@@ -15,8 +15,8 @@ What this file does (no LLM calls, no extra dependencies):
              step on top of it. Also reports how many tokens retrieval saves.
 
 Usage:
-  python chunk_retrieval.py --demo
-  python chunk_retrieval.py paper.xml \
+  python -m am_ie.chunk_retrieval --demo
+  python -m am_ie.chunk_retrieval paper.xml \
       --triage triage_result.json \
       --results agentic_extraction_results.json \
       --vocab vocab_tree.json

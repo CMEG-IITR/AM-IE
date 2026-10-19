@@ -218,6 +218,7 @@ __marimo__/
 .streamlit/secrets.toml
 
 papers
+harness_runs/
 
 vocab_flat.json
 vocab_tree.json
