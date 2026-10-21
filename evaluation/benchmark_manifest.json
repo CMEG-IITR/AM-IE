@@ -321,21 +321,21 @@
       "reviewed_reference": "evaluation/references/bjt-reviewed-subset.json",
       "reviewed_reference_status": "human_reviewed_subset",
       "note": "Source-checked subset from the silk powder Binder Jetting paper; not exhaustive.",
-      "latest_run": "harness_runs/20261021T105537Z_10.1016_j.addma.2020.101820",
+      "latest_run": "harness_runs/20261021T111816Z_10.1016_j.addma.2020.101820",
       "latest_attempt": {
-        "run": "harness_runs/20261021T105537Z_10.1016_j.addma.2020.101820",
+        "run": "harness_runs/20261021T111816Z_10.1016_j.addma.2020.101820",
         "status": "complete",
-        "comparison": "harness_runs/20261021T105537Z_10.1016_j.addma.2020.101820/comparison.json",
-        "verified_predictions": 7,
-        "flagged_predictions": 0,
-        "reviewed_rows_matched": 4,
-        "reviewed_rows_matched_including_material": 0,
+        "comparison": "harness_runs/20261021T111816Z_10.1016_j.addma.2020.101820/comparison.json",
+        "verified_predictions": 22,
+        "flagged_predictions": 4,
+        "reviewed_rows_matched": 7,
+        "reviewed_rows_matched_including_material": 6,
         "reviewed_rows_total": 9,
-        "reviewed_rows_unmatched": 5,
-        "prediction_only": 3,
-        "model_calls": 3,
-        "input_tokens": 12260,
-        "output_tokens": 3508
+        "reviewed_rows_unmatched": 2,
+        "prediction_only": 13,
+        "model_calls": 1,
+        "input_tokens": 10137,
+        "output_tokens": 1786
       },
       "recent_attempts": [
         {
@@ -352,6 +352,66 @@
           "model_calls": 3,
           "input_tokens": 12260,
           "output_tokens": 3508
+        },
+        {
+          "run": "harness_runs/20261021T111409Z_10.1016_j.addma.2020.101820",
+          "status": "complete",
+          "comparison": "harness_runs/20261021T111409Z_10.1016_j.addma.2020.101820/comparison.json",
+          "verified_predictions": 25,
+          "flagged_predictions": 2,
+          "reviewed_rows_matched": 7,
+          "reviewed_rows_matched_including_material": 2,
+          "reviewed_rows_total": 9,
+          "reviewed_rows_unmatched": 2,
+          "prediction_only": 16,
+          "model_calls": 1,
+          "input_tokens": 10137,
+          "output_tokens": 1432
+        },
+        {
+          "run": "harness_runs/20261021T111546Z_10.1016_j.addma.2020.101820",
+          "status": "complete",
+          "comparison": "harness_runs/20261021T111546Z_10.1016_j.addma.2020.101820/comparison.json",
+          "verified_predictions": 20,
+          "flagged_predictions": 3,
+          "reviewed_rows_matched": 6,
+          "reviewed_rows_matched_including_material": 2,
+          "reviewed_rows_total": 9,
+          "reviewed_rows_unmatched": 3,
+          "prediction_only": 11,
+          "model_calls": 1,
+          "input_tokens": 10137,
+          "output_tokens": 1238
+        },
+        {
+          "run": "harness_runs/20261021T111707Z_10.1016_j.addma.2020.101820",
+          "status": "complete",
+          "comparison": "harness_runs/20261021T111707Z_10.1016_j.addma.2020.101820/comparison.json",
+          "verified_predictions": 18,
+          "flagged_predictions": 5,
+          "reviewed_rows_matched": 7,
+          "reviewed_rows_matched_including_material": 5,
+          "reviewed_rows_total": 9,
+          "reviewed_rows_unmatched": 2,
+          "prediction_only": 9,
+          "model_calls": 1,
+          "input_tokens": 10137,
+          "output_tokens": 1222
+        },
+        {
+          "run": "harness_runs/20261021T111816Z_10.1016_j.addma.2020.101820",
+          "status": "complete",
+          "comparison": "harness_runs/20261021T111816Z_10.1016_j.addma.2020.101820/comparison.json",
+          "verified_predictions": 22,
+          "flagged_predictions": 4,
+          "reviewed_rows_matched": 7,
+          "reviewed_rows_matched_including_material": 6,
+          "reviewed_rows_total": 9,
+          "reviewed_rows_unmatched": 2,
+          "prediction_only": 13,
+          "model_calls": 1,
+          "input_tokens": 10137,
+          "output_tokens": 1786
         }
       ],
       "previous_failed_attempts": [
@@ -364,20 +424,25 @@
           "run": "harness_runs/20261021T105614Z_10.1016_j.addma.2020.101820",
           "status": "failed",
           "reason": "Turn interrupted before extraction; partial triage artifacts retained."
+        },
+        {
+          "run": "harness_runs/20261021T111910Z_10.1016_j.addma.2020.101820",
+          "status": "failed",
+          "reason": "API request limit reached before extraction output; run after the final material-specificity code adjustment did not complete."
         }
       ],
       "observed_run_range": {
         "reviewed_rows_matched": [
           4,
-          4
+          7
         ],
         "reviewed_rows_matched_including_material": [
           0,
-          0
+          6
         ],
-        "note": "One completed BJT run so far; subset agreement only, not accuracy."
+        "note": "Observed across five completed repeated extractions; subset agreement only, not accuracy."
       },
-      "finding": "D50 table values were not extracted (table_batches=0); 4/9 reviewed parameter values matched ignoring material, 0/9 with material. Layer thickness, binder saturation, binder type, and machine model material attribution needs correction."
+      "finding": "BJT table routing now reaches all five tables; 14 taxonomy-mapped cells are extracted and XML-verified per run. Latest completed run matches 7/9 reviewed values ignoring material and 6/9 including material. The model still misses some prose rows and table-derived material attribution varies; a final specificity adjustment is awaiting a rerun after the API daily limit."
     }
   ]
 }

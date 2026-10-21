@@ -1876,14 +1876,24 @@ def _finalize(skill, out, materials, ctx):
                     known.add(value)
             if row.get("parameter") == "Machine Make/Model":
                 continue
-            if row.get("material") and row["material"] in known:
-                continue
             direct = [material for material in known
                       if re.search(rf"(?<!\w){re.escape(material.casefold())}(?!\w)", quote)]
-            if len(direct) == 1:
-                row["material"] = direct[0]
-            elif len(direct) > 1:
-                row["material"] = ""
+            if direct:
+                current = row.get("material", "")
+                if (current in known
+                        and all(current.casefold().startswith(m.casefold() + " ")
+                                for m in direct)):
+                    continue
+                most_specific = max(direct, key=len)
+                if all(most_specific.casefold().startswith(m.casefold() + " ")
+                       or most_specific.casefold() == m.casefold() for m in direct):
+                    row["material"] = most_specific
+                elif len(direct) == 1:
+                    row["material"] = direct[0]
+                elif row.get("material") not in known:
+                    row["material"] = ""
+            elif row.get("material") and row["material"] in known:
+                continue
     verified, flagged = verify_parameters(accepted, ctx.paper_text, known, source_kind=ctx.source_kind)
     flagged = flagged + out["rejected"]
 
@@ -2026,8 +2036,11 @@ def run_lean(triage_result, sectioned, skill_library, subtype_skill_library=None
         for i, c in enumerate(c for c in all_chunks
                                if c.section in names and c.kind != "table")
     ]
-    paper_text = normalize_spaces("\n\n".join(sectioned[n] for n in names))
-    material_resolution_text = normalize_spaces("\n\n".join(sectioned.values()))
+    # Retrieval remains restricted to triage-selected sections, but symbolic
+    # quote/material verification must see the full paper (notably abstracts
+    # and methods can define aliases for table row labels).
+    paper_text = normalize_spaces("\n\n".join(sectioned.values()))
+    material_resolution_text = paper_text
     if table_chunks:
         paper_text += "\n\n" + normalize_spaces("\n\n".join(c.text for c in table_chunks))
     ctx = SimpleNamespace(
