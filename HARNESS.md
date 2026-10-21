@@ -93,7 +93,7 @@ from extraction quality using the existing `chunk_retrieval.evaluate` path.
 The evaluation essay's central point applies directly here: capability comes
 from the model, harness, environment, and inference budget together. It also
 recommends fixing budgets, versioning the full stack, publishing trajectories,
-and measuring variance. The checked-in references cover reviewed subsets for four process categories
+and measuring variance. The checked-in references cover reviewed subsets for five process categories
 (PBF, MEX, VPP, and MJT); they are not a full-paper-complete adjudicated corpus.
 Claims about end-to-end accuracy should wait until references cover all relevant
 reported parameters and their completeness has been reviewed.
@@ -104,7 +104,7 @@ Reference: [On the Evaluation of Agent Harnesses](https://blog.debargha.com/essa
 
 1. Put orchestration behind explicit stage interfaces (`parse`, `triage`,
    `retrieve`, `extract`, `verify`, `score`) while keeping the current CLI.
-2. Expand the four reviewed subsets into a versioned, completeness-reviewed
+2. Expand the five reviewed subsets into a versioned, completeness-reviewed
    evaluation set; SHL is intentionally deferred.
 3. Record structured per-call trajectories (stage, skill, selected chunk IDs,
    prompt/config fingerprint, response metadata, verifier decisions), keeping

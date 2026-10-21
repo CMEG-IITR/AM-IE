@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "status": "reviewed_subsets_pending_completeness_review",
-  "description": "Four-paper pilot across PBF, MEX, VPP, and MJT. References are manually checked source-supported subsets; full-paper completeness remains unadjudicated, so accuracy metrics are intentionally not reported. Repeated runs are retained because extraction varies between calls.",
+  "description": "Five-paper pilot across PBF, MEX, VPP, MJT, and BJT. References are manually checked source-supported subsets; full-paper completeness remains unadjudicated, so accuracy metrics are intentionally not reported. Repeated runs are retained because extraction varies between calls.",
   "cases": [
     {
       "process_category": "PBF",
@@ -312,6 +312,72 @@
         "note": "Observed across these retained runs; subset agreement only, not accuracy."
       },
       "previous_run": "harness_runs/20261021T104753Z_10.1016_j.aca.2020.11.033"
+    },
+    {
+      "process_category": "BJT",
+      "paper": "papers/ibrahim/ran_1/7/10.1016_j.addma.2020.101820.xml",
+      "candidate_reference": "papers/ibrahim/ran_1/7/server.json",
+      "adjudication_status": "human_reviewed_subset",
+      "reviewed_reference": "evaluation/references/bjt-reviewed-subset.json",
+      "reviewed_reference_status": "human_reviewed_subset",
+      "note": "Source-checked subset from the silk powder Binder Jetting paper; not exhaustive.",
+      "latest_run": "harness_runs/20261021T105537Z_10.1016_j.addma.2020.101820",
+      "latest_attempt": {
+        "run": "harness_runs/20261021T105537Z_10.1016_j.addma.2020.101820",
+        "status": "complete",
+        "comparison": "harness_runs/20261021T105537Z_10.1016_j.addma.2020.101820/comparison.json",
+        "verified_predictions": 7,
+        "flagged_predictions": 0,
+        "reviewed_rows_matched": 4,
+        "reviewed_rows_matched_including_material": 0,
+        "reviewed_rows_total": 9,
+        "reviewed_rows_unmatched": 5,
+        "prediction_only": 3,
+        "model_calls": 3,
+        "input_tokens": 12260,
+        "output_tokens": 3508
+      },
+      "recent_attempts": [
+        {
+          "run": "harness_runs/20261021T105537Z_10.1016_j.addma.2020.101820",
+          "status": "complete",
+          "comparison": "harness_runs/20261021T105537Z_10.1016_j.addma.2020.101820/comparison.json",
+          "verified_predictions": 7,
+          "flagged_predictions": 0,
+          "reviewed_rows_matched": 4,
+          "reviewed_rows_matched_including_material": 0,
+          "reviewed_rows_total": 9,
+          "reviewed_rows_unmatched": 5,
+          "prediction_only": 3,
+          "model_calls": 3,
+          "input_tokens": 12260,
+          "output_tokens": 3508
+        }
+      ],
+      "previous_failed_attempts": [
+        {
+          "run": "harness_runs/20261021T105556Z_10.1016_j.addma.2020.101820",
+          "status": "failed",
+          "reason": "Sandbox network resolution failed during triage; no extraction completed."
+        },
+        {
+          "run": "harness_runs/20261021T105614Z_10.1016_j.addma.2020.101820",
+          "status": "failed",
+          "reason": "Turn interrupted before extraction; partial triage artifacts retained."
+        }
+      ],
+      "observed_run_range": {
+        "reviewed_rows_matched": [
+          4,
+          4
+        ],
+        "reviewed_rows_matched_including_material": [
+          0,
+          0
+        ],
+        "note": "One completed BJT run so far; subset agreement only, not accuracy."
+      },
+      "finding": "D50 table values were not extracted (table_batches=0); 4/9 reviewed parameter values matched ignoring material, 0/9 with material. Layer thickness, binder saturation, binder type, and machine model material attribution needs correction."
     }
   ]
 }

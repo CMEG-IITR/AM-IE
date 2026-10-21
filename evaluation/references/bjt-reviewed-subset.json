@@ -1,0 +1,94 @@
+{
+  "materials": [
+    {
+      "material": "super fine silk powder (SFSP)",
+      "material_form": "powder",
+      "quote": "We used two different types of silk powder, super fine silk powder (SFSP) with an average particle size of 5 µm"
+    },
+    {
+      "material": "fine silk powder (FSP)",
+      "material_form": "powder",
+      "quote": "fine silk powder (FSP), average particle size of 20 µm"
+    },
+    {
+      "material": "polyvinyl alcohol (PVA)",
+      "material_form": "powder",
+      "quote": "polyvinyl alcohol (PVA) used as the solid binder"
+    },
+    {
+      "material": "Visijet PXL clear",
+      "material_form": "other",
+      "quote": "Visijet PXL clear as the liquid binder"
+    },
+    {
+      "material": "PXL core powder",
+      "material_form": "powder",
+      "quote": "The default parameters in 3D Print software for printing PXL core powder were 0.1 mm layer thickness and 100% saturation."
+    }
+  ],
+  "extracted_parameters": [
+    {
+      "parameter": "D50 (µm)",
+      "value": "5.725",
+      "unit": "µm",
+      "material": "super fine silk powder (SFSP)",
+      "quote": "SFSP 2.102 5.725 12.465 1.810"
+    },
+    {
+      "parameter": "D50 (µm)",
+      "value": "20.023",
+      "unit": "µm",
+      "material": "fine silk powder (FSP)",
+      "quote": "FSP 3.569 20.023 67.998 3.213"
+    },
+    {
+      "parameter": "D50 (µm)",
+      "value": "50.006",
+      "unit": "µm",
+      "material": "polyvinyl alcohol (PVA)",
+      "quote": "PVA 15.938 50.006 123.309 2.147"
+    },
+    {
+      "parameter": "D50 (µm)",
+      "value": "15.461",
+      "unit": "µm",
+      "material": "PXL core powder",
+      "quote": "PXL core 2.317 15.461 44.125 2.704"
+    },
+    {
+      "parameter": "Binder Type",
+      "value": "polyvinyl alcohol (PVA)",
+      "unit": "",
+      "material": "polyvinyl alcohol (PVA)",
+      "quote": "polyvinyl alcohol (PVA) used as the solid binder"
+    },
+    {
+      "parameter": "Binder Type",
+      "value": "Visijet PXL clear",
+      "unit": "",
+      "material": "Visijet PXL clear",
+      "quote": "Visijet PXL clear as the liquid binder"
+    },
+    {
+      "parameter": "Layer Thickness (µm)",
+      "value": "0.1",
+      "unit": "mm",
+      "material": "PXL core powder",
+      "quote": "The default parameters in 3D Print software for printing PXL core powder were 0.1 mm layer thickness and 100% saturation."
+    },
+    {
+      "parameter": "Binder Saturation (%)",
+      "value": "100",
+      "unit": "%",
+      "material": "PXL core powder",
+      "quote": "The default parameters in 3D Print software for printing PXL core powder were 0.1 mm layer thickness and 100% saturation."
+    },
+    {
+      "parameter": "Machine Make/Model",
+      "value": "ProJet CJP 460 Plus 3D Binder Jet printer (3D Systems, USA)",
+      "unit": "",
+      "material": "",
+      "quote": "A ProJet CJP 460 Plus 3D Binder Jet printer (3D Systems, USA) was used for printing with Visijet PXL clear as the liquid binder."
+    }
+  ]
+}

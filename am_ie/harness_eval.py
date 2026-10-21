@@ -24,6 +24,8 @@ def _quote_in_paper(quote, paper_text, ngram=6):
         return False
     q = re.sub(r"\s+", " ", quote.strip().lower())
     p = re.sub(r"\s+", " ", paper_text.lower())
+    # A table row may be rendered with separators between its cells.
+    p = re.sub(r"\s*\|\s*", " ", p)
     if q in p:
         return True
     q_words = q.split()
@@ -133,7 +135,22 @@ def _paper_text(path):
     sections = triage_pipeline.strip_markup_sectioned(raw)
     text = "\n\n".join(sections.values())
     tables = getattr(sections, "tables", [])
-    return text + "\n\n" + json.dumps(tables, ensure_ascii=False)
+    # Keep the structured table payload for diagnostics and also render cells as
+    # readable rows so verbatim table-row quotations can be audited.
+    table_rows = []
+    for table in tables:
+        caption = table.get("caption", "")
+        headers = table.get("headers", [])
+        if caption:
+            table_rows.append(caption)
+        if headers:
+            table_rows.append(" | ".join(str(cell) for cell in headers))
+        for row in table.get("rows", []):
+            cells = row.get("cells", []) if isinstance(row, dict) else row
+            if cells:
+                table_rows.append(" | ".join(str(cell) for cell in cells))
+    rendered_tables = "\n\n".join(table_rows)
+    return text + "\n\n" + json.dumps(tables, ensure_ascii=False) + "\n\n" + rendered_tables
 
 
 def compare_run(run_dir, reference_path, vocabulary_path="vocab_flat.json",

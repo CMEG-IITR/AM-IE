@@ -1082,6 +1082,11 @@ TABLE_HEADER_ALIASES = {
     "elongation": ("elongation", "elongation at break"),
     "yield str": ("yield strength",),
     "ys": ("yield strength",),
+    # Particle-size tables commonly label quantiles d(0.1), d(0.5), d(0.9)
+    # rather than D10/D50/D90. Keep the mapping explicit and unit-qualified.
+    "d 0 1 μm": ("D10 (µm)",),
+    "d 0 5 μm": ("D50 (µm)",),
+    "d 0 9 μm": ("D90 (µm)",),
 }
 
 
@@ -1212,7 +1217,8 @@ def _table_process_evidence(chunks, prose_chunks):
     return ranked[0][0], {"scores": scores, "evidence": evidence}
 
 
-def _route_table_chunks_by_process(table_chunks, prose_chunks):
+def _route_table_chunks_by_process(table_chunks, prose_chunks, process_codes=(),
+                                   source_kind="research-article"):
     """Assign each structured table to at most one AM process category."""
     groups = OrderedDict()
     for chunk in table_chunks:
@@ -1222,10 +1228,63 @@ def _route_table_chunks_by_process(table_chunks, prose_chunks):
         route, detail = _table_process_evidence(chunks, prose_chunks)
         routes[table_id] = route
         diagnostics[table_id] = {"process_category": route, **detail}
+    # For an experimental paper whose triage identifies exactly one process,
+    # its otherwise-unresolved tables belong to that process unless the paper
+    # is a review. This recovers ordinary feedstock tables whose captions do
+    # not repeat the process name (for example, a BJT particle-size table).
+    process_codes = {code for code in process_codes if code and code != "OTHER"}
+    if source_kind != "review" and len(process_codes) == 1 and process_codes == {"BJT"}:
+        only_code = next(iter(process_codes))
+        for table_id, route in list(routes.items()):
+            if route is None:
+                routes[table_id] = only_code
+                diagnostics[table_id] = {
+                    "process_category": only_code,
+                    "reason": "single process category identified by triage for a research article",
+                }
     return routes, diagnostics
 
 
-def _extract_mapped_xml_table_rows(table_chunks, skill, fixed_material=None):
+def _table_row_material(chunk, paper_text):
+    """Resolve a table's row label to an explicitly expanded paper material."""
+    if not chunk.table_cells:
+        return ""
+    label = str(chunk.table_cells[0]).strip()
+    if not label:
+        return ""
+    text = normalize_spaces(str(paper_text or ""))
+    # Short sample IDs can be linked only when the paper explicitly expands
+    # them in parentheses. This avoids guessing a material from the ID alone.
+    if re.fullmatch(r"[A-Z][A-Z0-9]{1,7}", label):
+        pattern = (r"\b([A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z][A-Za-z0-9-]*){0,5})"
+                   rf"\s*\(\s*{re.escape(label)}\s*\)")
+        matches = []
+        for match in re.finditer(pattern, text):
+            candidate = match.group(1).strip()
+            candidate = re.sub(r"^(?:(?:and|here|as|with|because|the|a|an)\s+)+", "",
+                               candidate, flags=re.I)
+            if " with " in candidate.casefold():
+                candidate = re.split(r"\s+with\s+", candidate, flags=re.I)[-1].strip()
+            if re.search(r"\b(?:powder|filament|resin|wire|alloy|silk|polyvinyl|metal|ceramic)\b",
+                         candidate, re.I):
+                matches.append(candidate)
+        matches = list(dict.fromkeys(matches))
+        if not matches:
+            return ""
+        # Prefer the explicit expansion most often used in the paper over a
+        # neighboring phrase that happens to precede the same abbreviation.
+        expanded = max(matches, key=lambda value: text.casefold().count(value.casefold()))
+        return f"{expanded} ({label})"
+    # The paper calls this feedstock "PXL core powder" while the table shortens
+    # the row label to "PXL core"; require that full name in the paper text.
+    expanded = f"{label} powder"
+    if label.casefold() == "pxl core" and re.search(rf"\b{re.escape(expanded)}\b", text, re.I):
+        return expanded
+    return ""
+
+
+def _extract_mapped_xml_table_rows(table_chunks, skill, fixed_material=None,
+                                   paper_text=""):
     """Read every taxonomy-matched cell directly from the XML-derived grid."""
     groups = OrderedDict()
     for chunk in table_chunks:
@@ -1253,7 +1312,7 @@ def _extract_mapped_xml_table_rows(table_chunks, skill, fixed_material=None):
                     "parameter": parameter,
                     "value": value,
                     "unit": header_unit or parameter_unit,
-                    "material": fixed_material or "",
+                    "material": fixed_material or _table_row_material(chunk, paper_text),
                     "chunk_id": chunk.id,
                     "section": chunk.section,
                     "quote": chunk.quote,
@@ -1396,7 +1455,9 @@ def _run_job_lean(job, ctx):
     table_chunks = [c for c in all_table_chunks
                     if table_routes.get(c.table_id or c.id) == process_code]
     xml_table_rows, table_header_maps, xml_table_errors = _extract_mapped_xml_table_rows(
-        table_chunks, skill, fixed_material=(materials[0] if materials and len(materials) == 1 else None))
+        table_chunks, skill,
+        fixed_material=(materials[0] if materials and len(materials) == 1 else None),
+        paper_text=getattr(ctx, "material_resolution_text", ""))
     # XML grids with taxonomy-matched headers are extracted deterministically.
     # Keep the old model path only for legacy text tables that lack a structured
     # XML grid; broad taxonomy calls added cost without recovering these rows.
@@ -1805,6 +1866,24 @@ def _finalize(skill, out, materials, ctx):
     else:
         low = ctx.paper_text.lower()
         known = {r["material"] for r in accepted if r["material"] and r["material"].lower() in low}
+        for row in accepted + out["rejected"]:
+            quote = re.sub(r"\s+", " ", str(row.get("quote", ""))).casefold()
+            if (skill.code == "BJT" and row.get("parameter") == "Binder Type"
+                    and re.search(r"\b(?:solid|liquid)\s+binder\b", quote)):
+                value = str(row.get("value", "")).strip()
+                if value and re.search(rf"(?<!\w){re.escape(value.casefold())}(?!\w)", quote):
+                    row["material"] = value
+                    known.add(value)
+            if row.get("parameter") == "Machine Make/Model":
+                continue
+            if row.get("material") and row["material"] in known:
+                continue
+            direct = [material for material in known
+                      if re.search(rf"(?<!\w){re.escape(material.casefold())}(?!\w)", quote)]
+            if len(direct) == 1:
+                row["material"] = direct[0]
+            elif len(direct) > 1:
+                row["material"] = ""
     verified, flagged = verify_parameters(accepted, ctx.paper_text, known, source_kind=ctx.source_kind)
     flagged = flagged + out["rejected"]
 
@@ -1934,18 +2013,27 @@ def run_lean(triage_result, sectioned, skill_library, subtype_skill_library=None
     all_chunks = build_chunks(sectioned)
     table_chunks = [c for c in all_chunks if c.kind == "table"]
     prose_chunks = [c for c in all_chunks if c.kind != "table"]
-    table_routes, table_routing_diagnostics = _route_table_chunks_by_process(table_chunks, prose_chunks)
+    triaged_process_codes = set(triage_result.get("process_categories", []))
+    triaged_process_codes.update(
+        entry.get("process_category") for entry in triage_result.get("printed_materials", [])
+        if entry.get("process_category")
+    )
+    table_routes, table_routing_diagnostics = _route_table_chunks_by_process(
+        table_chunks, prose_chunks, process_codes=triaged_process_codes,
+        source_kind=source_kind)
     retrieval_chunks = [
         replace(c, idx=i)
         for i, c in enumerate(c for c in all_chunks
                                if c.section in names and c.kind != "table")
     ]
     paper_text = normalize_spaces("\n\n".join(sectioned[n] for n in names))
+    material_resolution_text = normalize_spaces("\n\n".join(sectioned.values()))
     if table_chunks:
         paper_text += "\n\n" + normalize_spaces("\n\n".join(c.text for c in table_chunks))
     ctx = SimpleNamespace(
         retriever=ChunkRetriever(retrieval_chunks), table_chunks=table_chunks,
         table_routes=table_routes, table_routing_diagnostics=table_routing_diagnostics,
+        material_resolution_text=material_resolution_text,
         one_call_per_skill=True,
         source_kind=source_kind, model=model,
         effort=reasoning_effort, per_param_k=per_param_k, max_chunks=max_chunks,
@@ -1972,7 +2060,16 @@ def run_lean(triage_result, sectioned, skill_library, subtype_skill_library=None
                 print(f"Warning: no skill defined for category {code}, skipping")
                 continue
             job = groups.setdefault(skill.code, {"skill": skill, "materials": []})
-            if material not in job["materials"]:
+            # Triage sometimes compresses a blend into one prose label (e.g.
+            # "silk powder mixed with PVA powder"). Pinning that whole phrase
+            # forces every parameter onto one material; let the extraction
+            # call resolve explicit constituents and leave unclear rows empty.
+            composite_label = re.search(
+                r"\b(?:mixed with|blended with|blend of|mixture of|combined with|"
+                r"composite of|reinforced with)\b", material, re.I)
+            if composite_label:
+                job["materials"] = None
+            elif job["materials"] is not None and material not in job["materials"]:
                 job["materials"].append(material)
     else:
         if source_kind == "review":
