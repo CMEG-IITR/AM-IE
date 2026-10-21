@@ -772,6 +772,7 @@ GLOBAL_SYNONYMS = {
     "machine make / model": ["printer", "printed with", "printed using", "system", "purchased from"],
     "support type": ["support material", "support removal", "removed by"],
     "build orientation": ["orientation", "oriented"],
+    "part geometry": ["nozzle", "aerospike", "component geometry", "test structure", "printed component"],
     "support removal": ["removed by", "water jetting", "soaking", "dissolved"],
 }
 
@@ -855,6 +856,14 @@ Rules:
     WRONG: one row with value="90%, 100%, and 110%" (or value="90-110%")
     RIGHT: three rows, all citing c0012: value="90%", value="100%", value="110%"
 - "unit" is the unit as written next to the value, or "" if none.
+- Coverage check: inspect each parameter in this skill's taxonomy independently before
+  answering. One excerpt can support several different parameters; emit a separate row
+  for every explicitly supported parameter even when the same clause already supports
+  another row. Do not skip categorical values or qualitative bounds such as a named
+  atmosphere or "porosity below X%".
+- For "Part Geometry", give only the named part/component (for example, "ceramic aerospike nozzle");
+  leave thrust rating, use, and other conditions out of the value. If its excerpt says
+  "made of [material]", assign that explicitly named material to the row.
 - Only extract what the authors themselves used, printed, processed or measured. Do NOT take numbers from unrelated protocols (chemical extraction, chromatography, simulation settings) and label them as print parameters.
 - If a parameter is mentioned but no value is given, omit it. Never invent values.
 - An empty "rows" list is the CORRECT answer when the excerpts report nothing from this skill.
@@ -980,16 +989,73 @@ def self_check_row(row, chunk, name_tokens):
         "Projector Resolution (µm/px)": (
             "pixel size", "µm/px", "μm/px", "um/px",
         ),
+        "CVD Coating (Y/N)": (
+            "cvd", "chemical vapor deposition", "chemical vapour deposition",
+        ),
+        "PVD Coating (Y/N)": (
+            "pvd", "physical vapor deposition", "physical vapour deposition",
+        ),
+        "Size Range (µm)": (
+            "particle", "powder", "grain", "size range",
+        ),
+        "Part Geometry": (
+            "part", "component", "nozzle", "geometry", "shape", "engine", "specimen",
+        ),
+        "Ceramic Type (Alumina/Zirconia)": (
+            "ceramic", "alumina", "zirconia",
+        ),
+        "Porosity (%)": ("porosity", "pore"),
+        "Debinding Cycle": ("heating profile", "heating rate", "dwell", "debinding cycle", "ramp"),
+        "Green Part Dimensions": ("dimension", "diameter", "length", "width", "height", "size"),
+        "Sintered Dimensions": ("dimension", "diameter", "length", "width", "height", "size"),
+        "Sintered Density (%TD)": ("density", "%td", "relative density"),
+        "Max Service Temp (°C)": ("service temperature", "operating temperature", "maximum service temperature"),
+        "Atmosphere (Ar/N2/Vacuum)": (
+            "atmosphere", "ambient", "air", "nitrogen", "argon", "vacuum",
+        ),
     }.get(parameter, ())
     if required_evidence and not any(term in quote_lower for term in required_evidence):
         return f"quote does not identify the value as {parameter}"
+    if parameter == "Min Feature Size (µm)":
+        number = next(iter(parse_numbers(value)), None)
+        if number is not None:
+            number_text = str(int(number)) if number.is_integer() else str(number)
+            number_match = re.search(rf"(?<![\d.]){re.escape(number_text)}(?![\d.])", quote_lower)
+            number_at = number_match.start() if number_match else -1
+            prefix = quote_lower[:number_at] if number_at >= 0 else ""
+            pixel_at = prefix.rfind("pixel size")
+            feature_at = max(prefix.rfind(term) for term in
+                             ("minimum wall thickness", "minimum feature", "feature size"))
+            if number_at < 0 or (pixel_at > feature_at):
+                return "value is projector pixel size, not a minimum feature size"
+            if feature_at < 0:
+                return "value is not tied to a minimum feature-size phrase"
+    if parameter == "Porosity (%)":
+        bound = re.search(r"\b(?:below|under|less than|up to|at most)\s*\d|<\s*\d", quote_lower)
+        if bound and not re.search(r"\b(?:below|under|less than|up to|at most)\b|<", str(value).casefold()):
+            return "value omits the explicit porosity bound from the quote"
+    if parameter == "Debinding Cycle" and re.search(r"\b(atmosphere|air|nitrogen|argon|vacuum)\b", str(value).casefold()):
+        return "value is an atmosphere, not a debinding cycle or schedule"
+    if parameter.startswith("Projector Resolution") and re.search(r"\d\s*[×x]\s*\d", str(value)):
+        return "projector pixel-count array is not physical pixel resolution"
     if parameter.startswith("Layer Thickness"):
         value_text = str(value or "")
+        if re.search(r"\b(?:voxel|pixel) size\b", quote_lower) and not re.search(
+                r"\blayer (?:thickness|height)\b", quote_lower):
+            return "value is a voxel/pixel size, not a printed layer thickness"
         start = quote_lower.find(value_text.casefold())
-        if start >= 0 and "suspension layer is typically" in quote_lower[max(0, start - 55):start]:
-            return "value is the suspension-coating layer thickness, not the realized layer thickness"
+        if start >= 0:
+            suspension_marker = quote_lower.rfind("suspension layer", 0, start)
+            realized_marker = quote_lower.rfind("if a layer with a thickness of", 0, start)
+            realized_phrase_after = "if a layer with a thickness of" in quote_lower[start + len(value_text):]
+            if suspension_marker >= 0 and realized_marker < suspension_marker and realized_phrase_after:
+                return "value is the suspension-coating layer thickness, not the realized layer thickness"
         if re.search(r"(?:printers?|systems?) allow printing layers ranging", quote_lower):
             return "value describes a general printer capability range, not a setting used for this study"
+    if re.search(r"\(\s*y\s*/\s*n\s*\)$", parameter, re.I):
+        boolean_values = {"yes", "no", "y", "n", "true", "false", "present", "absent"}
+        if str(value or "").strip().casefold() not in boolean_values:
+            return "Y/N taxonomy parameter requires an explicit categorical value, not a numeric property"
     bare, unit = split_param(parameter)
     nums = parse_numbers(value)
     if nums:
@@ -1317,10 +1383,7 @@ def _run_job_lean(job, ctx):
     syn = dict(GLOBAL_SYNONYMS)
     for k, v in (skill.synonyms or {}).items():
         syn[k.lower()] = list(syn.get(k.lower(), [])) + list(v)
-    skill_for_retrieval = SimpleNamespace(param_sections=skill.param_sections, synonyms=syn)
-    selected, retrieved_by_parameter = ctx.retriever.retrieve_for_skill(
-        skill_for_retrieval, per_param_k, max_chunks,
-    )
+    selected, retrieved_by_parameter = [], {}
     # Tables are sent independently of prose retrieval, so the chunk cap cannot
     # remove an appendix/table row that triage did not select.
     selected = [c for c in selected if c.kind != "table"]
@@ -1341,8 +1404,8 @@ def _run_job_lean(job, ctx):
     # grids. Mapped values are extracted deterministically as well; the model
     # can handle valid taxonomy concepts that do not map directly from a header.
     table_api_chunks = list(table_chunks)
-    all_input_chunks = selected + table_chunks
-    model_input_chunks = selected + table_api_chunks
+    all_input_chunks = list(table_chunks)
+    model_input_chunks = list(table_api_chunks)
     stats = {"skill": skill.code, "chunks_sent": len(selected) + len(table_api_chunks),
              "prose_chunks_retrieved": len(selected),
              "retrieved_chunk_ids_by_parameter": retrieved_by_parameter,
@@ -1365,12 +1428,6 @@ def _run_job_lean(job, ctx):
                  table_id: {str(index + 1): parameter for index, parameter in mapping.items()}
                  for table_id, mapping in table_header_maps.items() if mapping
              }}
-    if not all_input_chunks:
-        stats.update(rows_raw=0, note="no chunks retrieved")
-        return {"rows": [], "rejected": [], "dropped": [], "hollow": [], "missing": [],
-                "requested": [], "stats": stats, "usage": usage}
-
-    chunk_by_id = {c.id: c for c in all_input_chunks}
     if materials is None:
         mode, fixed = "free", None
     elif len(materials) == 1:
@@ -1389,7 +1446,8 @@ def _run_job_lean(job, ctx):
     codes = ", ".join(job.get("extra_codes", []))
     table_skill = _load_table_extraction_skill()
 
-    def make_call_parts(chunks):
+    def make_call_parts(chunks, call_skill=None):
+        call_skill = call_skill or skill
         has_tables = any(c.kind == "table" for c in chunks)
         table_block = (
             "TABLE-AWARE EXTRACTION PASS: inspect every table row assigned to this process skill. Use the "
@@ -1400,15 +1458,15 @@ def _run_job_lean(job, ctx):
         )
         cited_chunk_ids = [c.id for c in chunks]
         tool = build_extraction_tool(
-            skill, cited_chunk_ids, mode, materials, ctx.source_kind,
+            call_skill, cited_chunk_ids, mode, materials, ctx.source_kind,
             extra_skill_codes=job.get("extra_codes", []))
         prompt = LEAN_PROMPT.format(
-            skill_name=skill.name, skill_code=skill.code,
+            skill_name=call_skill.name, skill_code=call_skill.code,
             material_block=_material_block(mode, materials),
             table_block=table_block,
             review_block=REVIEW_BLOCK if ctx.source_kind == "review" else "",
             skill_request_block=SKILL_REQUEST_BLOCK.format(codes=codes) if codes else "",
-            synonym_text=_synonym_text(skill), hints_text=skill.build_hints_text(),
+            synonym_text=_synonym_text(call_skill), hints_text=call_skill.build_hints_text(),
             excerpts=render_chunks(chunks),
         )
         return prompt, tool
@@ -1442,35 +1500,130 @@ def _run_job_lean(job, ctx):
         stats.setdefault("model_calls", []).append(record)
         return args
 
-    def fits_prompt_budget(chunks):
-        prompt, tool = make_call_parts(chunks)
+    def fits_prompt_budget(chunks, call_skill):
+        prompt, tool = make_call_parts(chunks, call_skill)
         schema = json.dumps(tool["schema"], ensure_ascii=False)
         estimated = ((len(prompt) + len(schema) + 2) // 3) + EXTRACTION_TOKEN_ESTIMATE_MARGIN
         return estimated <= EXTRACTION_INPUT_TOKEN_BUDGET
 
-    # One category call contains all routed table rows plus that skill's
-    # retrieved prose. If needed, trim the lowest-ranked prose excerpts to keep
-    # the complete table grid in the single request.
-    batch = list(table_api_chunks) + list(selected)
-    while selected and not fits_prompt_budget(batch):
-        batch.pop()
-        selected.pop()
-    if batch and not fits_prompt_budget(batch):
-        print(f"Warning: routed tables for {skill.code} exceed the one-call input budget; sending complete table grid anyway.")
-    stats["prose_chunks_retrieved"] = len(selected)
-    stats["chunks_sent"] = len(batch)
-    stats["chunk_tokens_est"] = sum(approx_tokens(c.text) for c in batch)
-    stats["prose_chunk_ids_sent"] = [c.id for c in selected]
+    call_skills = [skill]
+    if skill.code == "VPP-DLP":
+        process_sections = OrderedDict()
+        layer_sections = OrderedDict()
+        shape_sections = OrderedDict()
+        ceramic_geometry_sections = OrderedDict()
+        physical_sections = OrderedDict()
+        porosity_sections = OrderedDict()
+        postprocess_sections = OrderedDict()
+        atmosphere_sections = OrderedDict()
+        for name, params in skill.param_sections.items():
+            if name.startswith("Process Parameters"):
+                layer_thickness = [p for p in params if p == "Layer Thickness (µm)"]
+                remainder = [p for p in params if p not in layer_thickness]
+                if remainder:
+                    process_sections[name] = remainder
+                if layer_thickness:
+                    layer_sections[name] = layer_thickness
+            elif name.startswith("Feedstock Properties"):
+                ceramic_type = [p for p in params if p.startswith("Ceramic Type")]
+                remainder = [p for p in params if p not in ceramic_type]
+                if remainder:
+                    process_sections[name] = remainder
+                if ceramic_type:
+                    ceramic_geometry_sections[name] = ceramic_type
+            elif name.startswith("Final Shape"):
+                geometry = [p for p in params if p == "Part Geometry"]
+                remainder = [p for p in params if p not in geometry]
+                if remainder:
+                    shape_sections[name] = remainder
+                if geometry:
+                    ceramic_geometry_sections[name] = geometry
+            elif name.startswith("L8 ·"):
+                porosity = [p for p in params if p == "Porosity (%)"]
+                remainder = [p for p in params if p not in porosity]
+                if remainder:
+                    physical_sections[name] = remainder
+                if porosity:
+                    porosity_sections[name] = porosity
+            elif name.startswith("L9 ·"):
+                atmosphere = [p for p in params if p == "Atmosphere (Ar/N2/Vacuum)"]
+                remainder = [p for p in params if p not in atmosphere]
+                if remainder:
+                    postprocess_sections[name] = remainder
+                if atmosphere:
+                    atmosphere_sections[name] = atmosphere
+        section_groups = [
+            process_sections,
+            layer_sections,
+            shape_sections,
+            ceramic_geometry_sections,
+            physical_sections,
+            porosity_sections,
+            postprocess_sections,
+            atmosphere_sections,
+        ]
+        call_skills = [
+            replace(skill, param_sections=group)
+            for group in section_groups if group
+        ]
+
+    # Keep broad DLP taxonomy schemas from competing for attention in one
+    # request. Each group gets its own parameter-focused retrieval and schema;
+    # the harness still owns all calls and merges their verified rows below.
+    call_batches = []
+    retrieved_all = {}
+    for call_skill in call_skills:
+        skill_for_retrieval = SimpleNamespace(
+            param_sections=call_skill.param_sections, synonyms=syn,
+        )
+        group_chunks, group_retrieval = ctx.retriever.retrieve_for_skill(
+            skill_for_retrieval, per_param_k, max_chunks,
+        )
+        group_chunks = [c for c in group_chunks if c.kind != "table"]
+        retrieved_all.update(group_retrieval)
+        batch = list(table_api_chunks) + list(group_chunks)
+        while group_chunks and not fits_prompt_budget(batch, call_skill):
+            batch.pop()
+            group_chunks.pop()
+        if batch and not fits_prompt_budget(batch, call_skill):
+            print(f"Warning: routed tables for {skill.code} exceed the one-call input budget; sending complete table grid anyway.")
+        if batch:
+            call_batches.append((call_skill, batch, group_chunks))
+            all_input_chunks.extend(batch)
+    # A call can see the same table through more than one schema group; retain
+    # each call's metadata for provenance while indexing source text once.
+    chunk_by_id = {c.id: c for c in all_input_chunks}
+    selected_ids = list(dict.fromkeys(
+        c.id for _, _, group_chunks in call_batches for c in group_chunks
+    ))
+    selected_by_id = {c.id: c for _, _, group_chunks in call_batches for c in group_chunks}
+    selected = [selected_by_id[chunk_id] for chunk_id in selected_ids]
+    retrieved_by_parameter = retrieved_all
+    stats["retrieved_chunk_ids_by_parameter"] = retrieved_by_parameter
+    stats["retrieved_prose_chunk_ids"] = selected_ids
+    stats["prose_chunks_retrieved"] = len(selected_ids)
+    stats["chunks_sent"] = sum(len(batch) for _, batch, _ in call_batches)
+    stats["chunk_tokens_est"] = sum(
+        approx_tokens(c.text) for _, batch, _ in call_batches for c in batch
+    )
+    stats["n_params"] = len(_unique_params(skill))
+    stats["prose_chunk_ids_sent"] = [
+        c.id for _, _, group_chunks in call_batches for c in group_chunks
+    ]
     stats["table_chunk_ids_sent"] = [c.id for c in table_api_chunks]
     stats["chunks_sent_metadata"] = [
         {"chunk_id": c.id, "section": c.section, "kind": c.kind,
          "table_id": c.table_id}
-        for c in batch
+        for _, batch, _ in call_batches for c in batch
     ]
-    batches = [batch] if batch else []
+    if not call_batches:
+        stats.update(rows_raw=0, model_batches=0, note="no chunks retrieved")
+        return {"rows": [], "rejected": [], "dropped": [], "hollow": [], "missing": [],
+                "requested": [], "stats": stats, "usage": usage}
+
     raw_rows, requested, model_errors = [], [], []
-    for batch in batches:
-        prompt, tool = make_call_parts(batch)
+    for call_skill, batch, _ in call_batches:
+        prompt, tool = make_call_parts(batch, call_skill)
         try:
             args = recorded_call(prompt, tool, batch, "extract")
         except Exception as e:
@@ -1483,9 +1636,12 @@ def _run_job_lean(job, ctx):
         raw_rows.extend(args.get("rows", []) or [])
         requested.extend(args.get("additional_skills", []) or [])
     requested = list(dict.fromkeys(requested))
-    stats["model_batches"] = len(batches)
-    stats["table_batches"] = 1 if table_api_chunks else 0
-    stats["table_context_chunks_sent"] = len(selected) if table_api_chunks else 0
+    stats["model_batches"] = len(call_batches)
+    stats["table_batches"] = len(call_batches) if table_api_chunks else 0
+    stats["table_context_chunks_sent"] = (
+        sum(len(group_chunks) for _, _, group_chunks in call_batches)
+        if table_api_chunks else 0
+    )
     if model_errors:
         stats["model_errors"] = model_errors
 
@@ -1629,6 +1785,23 @@ def _finalize(skill, out, materials, ctx):
                 quote = str(row.get("quote", "")).casefold()
                 if not any(term in quote for term in ("suspension", "slurry", "feedstock")):
                     row["material"] = ""
+            if (skill.code == "VPP-DLP"
+                    and row.get("parameter") == "Ceramic Type (Alumina/Zirconia)"
+                    and str(row.get("value", "")).casefold() in str(row.get("quote", "")).casefold()):
+                # Ceramic type is itself the material name. Keep the exact,
+                # source-supported identity even when triage pins the generic
+                # ceramic suspension as the printer feedstock.
+                row["material"] = str(row["value"]).strip()
+            elif skill.code == "VPP-DLP" and row.get("parameter") == "Part Geometry":
+                made_of = re.search(
+                    r"\bmade of\s+([A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z][A-Za-z0-9-]*){0,3})(?=\s+(?:using|with|for|in)\b|[,.;]|$)",
+                    str(row.get("quote", "")), re.IGNORECASE,
+                )
+                if made_of:
+                    row["material"] = re.split(
+                        r"\s+(?:using|with|for|in)\b", made_of.group(1).strip(),
+                        maxsplit=1, flags=re.IGNORECASE,
+                    )[0].strip()
     else:
         low = ctx.paper_text.lower()
         known = {r["material"] for r in accepted if r["material"] and r["material"].lower() in low}
@@ -1667,8 +1840,8 @@ def _finalize(skill, out, materials, ctx):
                     "self_check_dropped": [r for r in out["dropped"] if r["material"] == m],
                 },
             }
-        unassigned_verified = [r for r in verified if not r.get("material")]
-        unassigned_flagged = [r for r in flagged if not r.get("material")]
+        unassigned_verified = [r for r in verified if not r.get("material") or r.get("material") not in known]
+        unassigned_flagged = [r for r in flagged if not r.get("material") or r.get("material") not in known]
         if unassigned_verified or unassigned_flagged:
             results[None] = {
                 "skill": skill.code, "material": None,
@@ -1850,7 +2023,33 @@ def run_lean(triage_result, sectioned, skill_library, subtype_skill_library=None
         code = job["skill"].code
         multi = job["materials"] is not None and len(job["materials"]) > 1
         for m, r in res.items():
-            results[f"{code}::{m}" if multi else code] = r
+            result_key = f"{code}::{m}" if multi else code
+            if result_key not in results:
+                results[result_key] = r
+                continue
+            # A single pinned material can still produce both material-tagged
+            # and unassigned rows. They share one skill key in the public
+            # result shape, so merge their buckets instead of overwriting the
+            # first bucket with the second.
+            combined = results[result_key]
+            if not combined.get("material") and r.get("material"):
+                combined["material"] = r["material"]
+            for section in ("materials", "parameters"):
+                dst_section = combined.setdefault(section, {})
+                src_section = r.get(section, {})
+                for status, rows in src_section.items():
+                    dst_rows = dst_section.setdefault(status, [])
+                    known_rows = {
+                        (row.get("parameter"), row.get("value"), row.get("unit"),
+                         row.get("material"), row.get("quote"), row.get("chunk_id"))
+                        for row in dst_rows
+                    }
+                    for row in rows:
+                        key = (row.get("parameter"), row.get("value"), row.get("unit"),
+                               row.get("material"), row.get("quote"), row.get("chunk_id"))
+                        if key not in known_rows:
+                            dst_rows.append(row)
+                            known_rows.add(key)
 
     usage_total = {}
     for _, _, u, _ in outputs:

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "status": "reviewed_subsets_pending_completeness_review",
-  "description": "Three-paper pilot. The new reference files are manually checked subsets of source-supported rows; full-paper completeness remains unadjudicated, so accuracy metrics are intentionally not reported.",
+  "description": "Four-paper pilot across PBF, MEX, VPP, and MJT. References are manually checked source-supported subsets; full-paper completeness remains unadjudicated, so accuracy metrics are intentionally not reported. Repeated runs are retained because extraction varies between calls.",
   "cases": [
     {
       "process_category": "PBF",
@@ -11,8 +11,66 @@
       "latest_pilot_run": "harness_runs/pilot/20261019T182140Z_10.1016_j.addma.2026.105077",
       "adjudication_status": "human_reviewed_subset",
       "reviewed_reference": "evaluation/references/pbf-reviewed-subset.json",
-      "latest_run": "harness_runs/adjudicated/20261019T185914Z_10.1016_j.addma.2026.105077",
-      "reviewed_reference_status": "human_reviewed_subset"
+      "latest_run": "harness_runs/20261021T104334Z_10.1016_j.addma.2026.105077",
+      "reviewed_reference_status": "human_reviewed_subset",
+      "latest_attempt": {
+        "run": "harness_runs/20261021T104334Z_10.1016_j.addma.2026.105077",
+        "status": "complete",
+        "comparison": "harness_runs/20261021T104334Z_10.1016_j.addma.2026.105077/comparison.json",
+        "verified_predictions": 13,
+        "flagged_predictions": 1,
+        "reviewed_rows_matched": 12,
+        "reviewed_rows_matched_including_material": 12,
+        "reviewed_rows_total": 12,
+        "reviewed_rows_unmatched": 0,
+        "prediction_only": 0,
+        "model_calls": 1,
+        "input_tokens": 7782,
+        "output_tokens": 1108
+      },
+      "recent_attempts": [
+        {
+          "run": "harness_runs/20261020T233448Z_10.1016_j.addma.2026.105077",
+          "status": "complete",
+          "comparison": "harness_runs/20261020T233448Z_10.1016_j.addma.2026.105077/comparison.json",
+          "verified_predictions": 13,
+          "flagged_predictions": 0,
+          "reviewed_rows_matched": 10,
+          "reviewed_rows_matched_including_material": 10,
+          "reviewed_rows_total": 12,
+          "reviewed_rows_unmatched": 2,
+          "prediction_only": 2,
+          "model_calls": 1,
+          "input_tokens": 7722,
+          "output_tokens": 2085
+        },
+        {
+          "run": "harness_runs/20261021T104334Z_10.1016_j.addma.2026.105077",
+          "status": "complete",
+          "comparison": "harness_runs/20261021T104334Z_10.1016_j.addma.2026.105077/comparison.json",
+          "verified_predictions": 13,
+          "flagged_predictions": 1,
+          "reviewed_rows_matched": 12,
+          "reviewed_rows_matched_including_material": 12,
+          "reviewed_rows_total": 12,
+          "reviewed_rows_unmatched": 0,
+          "prediction_only": 0,
+          "model_calls": 1,
+          "input_tokens": 7782,
+          "output_tokens": 1108
+        }
+      ],
+      "observed_run_range": {
+        "reviewed_rows_matched": [
+          12,
+          12
+        ],
+        "reviewed_rows_matched_including_material": [
+          12,
+          12
+        ],
+        "note": "Observed across these retained runs; subset agreement only, not accuracy."
+      }
     },
     {
       "process_category": "MEX",
@@ -22,8 +80,96 @@
       "latest_pilot_run": "harness_runs/pilot/20261019T182217Z_10.1016_j.aca.2019.10.075",
       "adjudication_status": "human_reviewed_subset",
       "reviewed_reference": "evaluation/references/mex-reviewed-subset.json",
-      "latest_run": "harness_runs/adjudicated/20261019T190747Z_10.1016_j.aca.2019.10.075",
-      "reviewed_reference_status": "human_reviewed_subset"
+      "latest_run": "harness_runs/20261021T104410Z_10.1016_j.aca.2019.10.075",
+      "reviewed_reference_status": "human_reviewed_subset",
+      "latest_attempt": {
+        "run": "harness_runs/20261021T104410Z_10.1016_j.aca.2019.10.075",
+        "status": "complete",
+        "comparison": "harness_runs/20261021T104410Z_10.1016_j.aca.2019.10.075/comparison.json",
+        "verified_predictions": 10,
+        "flagged_predictions": 0,
+        "reviewed_rows_matched": 5,
+        "reviewed_rows_matched_including_material": 5,
+        "reviewed_rows_total": 8,
+        "reviewed_rows_unmatched": 3,
+        "prediction_only": 5,
+        "model_calls": 1,
+        "input_tokens": 6531,
+        "output_tokens": 1561
+      },
+      "recent_attempts": [
+        {
+          "run": "harness_runs/20261020T233535Z_10.1016_j.aca.2019.10.075",
+          "status": "complete",
+          "comparison": "harness_runs/20261020T233535Z_10.1016_j.aca.2019.10.075/comparison.json",
+          "verified_predictions": 7,
+          "flagged_predictions": 0,
+          "reviewed_rows_matched": 4,
+          "reviewed_rows_matched_including_material": 4,
+          "reviewed_rows_total": 8,
+          "reviewed_rows_unmatched": 4,
+          "prediction_only": 3,
+          "model_calls": 1,
+          "input_tokens": 6471,
+          "output_tokens": 1410
+        },
+        {
+          "run": "harness_runs/20261021T104410Z_10.1016_j.aca.2019.10.075",
+          "status": "complete",
+          "comparison": "harness_runs/20261021T104410Z_10.1016_j.aca.2019.10.075/comparison.json",
+          "verified_predictions": 10,
+          "flagged_predictions": 0,
+          "reviewed_rows_matched": 5,
+          "reviewed_rows_matched_including_material": 5,
+          "reviewed_rows_total": 8,
+          "reviewed_rows_unmatched": 3,
+          "prediction_only": 5,
+          "model_calls": 1,
+          "input_tokens": 6531,
+          "output_tokens": 1561
+        },
+        {
+          "run": "harness_runs/adjudicated/20261019T190747Z_10.1016_j.aca.2019.10.075",
+          "status": "complete",
+          "comparison": "harness_runs/adjudicated/20261019T190747Z_10.1016_j.aca.2019.10.075/comparison.json",
+          "verified_predictions": 8,
+          "flagged_predictions": 0,
+          "reviewed_rows_matched": 8,
+          "reviewed_rows_matched_including_material": 8,
+          "reviewed_rows_total": 8,
+          "reviewed_rows_unmatched": 0,
+          "prediction_only": 0,
+          "model_calls": 1,
+          "input_tokens": 6399,
+          "output_tokens": 1110
+        }
+      ],
+      "observed_run_range": {
+        "reviewed_rows_matched": [
+          4,
+          8
+        ],
+        "reviewed_rows_matched_including_material": [
+          4,
+          8
+        ],
+        "note": "Observed across these retained runs; subset agreement only, not accuracy."
+      },
+      "best_attempt": {
+        "run": "harness_runs/adjudicated/20261019T190747Z_10.1016_j.aca.2019.10.075",
+        "status": "complete",
+        "comparison": "harness_runs/adjudicated/20261019T190747Z_10.1016_j.aca.2019.10.075/comparison.json",
+        "verified_predictions": 8,
+        "flagged_predictions": 0,
+        "reviewed_rows_matched": 8,
+        "reviewed_rows_matched_including_material": 8,
+        "reviewed_rows_total": 8,
+        "reviewed_rows_unmatched": 0,
+        "prediction_only": 0,
+        "model_calls": 1,
+        "input_tokens": 6399,
+        "output_tokens": 1110
+      }
     },
     {
       "process_category": "VPP",
@@ -33,13 +179,139 @@
       "latest_pilot_run": "harness_runs/pilot/20261019T182258Z_10.1016_j.actaastro.2024.04.017",
       "adjudication_status": "human_reviewed_subset",
       "reviewed_reference": "evaluation/references/vpp-reviewed-subset.json",
-      "latest_run": "harness_runs/adjudicated/20261019T190834Z_10.1016_j.actaastro.2024.04.017",
+      "latest_run": "harness_runs/20261021T104121Z_10.1016_j.actaastro.2024.04.017",
       "reviewed_reference_status": "human_reviewed_subset",
       "latest_attempt": {
+        "run": "harness_runs/20261021T104121Z_10.1016_j.actaastro.2024.04.017",
+        "status": "complete",
+        "comparison": "harness_runs/20261021T104121Z_10.1016_j.actaastro.2024.04.017/comparison.json",
+        "verified_predictions": 16,
+        "flagged_predictions": 1,
+        "reviewed_rows_matched": 15,
+        "reviewed_rows_matched_including_material": 15,
+        "reviewed_rows_total": 16,
+        "reviewed_rows_unmatched": 1,
+        "prediction_only": 0,
+        "model_calls": 8,
+        "input_tokens": 22250,
+        "output_tokens": 9432
+      },
+      "previous_failed_attempt": {
         "run": "harness_runs/adjudicated/20261019T191122Z_10.1016_j.actaastro.2024.04.017",
         "status": "failed",
         "reason": "OpenAI daily request limit reached before extraction rows were returned"
+      },
+      "recent_attempts": [
+        {
+          "run": "harness_runs/20261021T103856Z_10.1016_j.actaastro.2024.04.017",
+          "status": "complete",
+          "comparison": "harness_runs/20261021T103856Z_10.1016_j.actaastro.2024.04.017/comparison.json",
+          "verified_predictions": 20,
+          "flagged_predictions": 4,
+          "reviewed_rows_matched": 16,
+          "reviewed_rows_matched_including_material": 15,
+          "reviewed_rows_total": 16,
+          "reviewed_rows_unmatched": 0,
+          "prediction_only": 3,
+          "model_calls": 8,
+          "input_tokens": 22250,
+          "output_tokens": 11200
+        },
+        {
+          "run": "harness_runs/20261021T104121Z_10.1016_j.actaastro.2024.04.017",
+          "status": "complete",
+          "comparison": "harness_runs/20261021T104121Z_10.1016_j.actaastro.2024.04.017/comparison.json",
+          "verified_predictions": 16,
+          "flagged_predictions": 1,
+          "reviewed_rows_matched": 15,
+          "reviewed_rows_matched_including_material": 15,
+          "reviewed_rows_total": 16,
+          "reviewed_rows_unmatched": 1,
+          "prediction_only": 0,
+          "model_calls": 8,
+          "input_tokens": 22250,
+          "output_tokens": 9432
+        }
+      ],
+      "observed_run_range": {
+        "reviewed_rows_matched": [
+          15,
+          16
+        ],
+        "reviewed_rows_matched_including_material": [
+          15,
+          15
+        ],
+        "note": "Observed across these retained runs; subset agreement only, not accuracy."
       }
+    },
+    {
+      "process_category": "MJT",
+      "paper": "papers/ibrahim/ran/5/10.1016_j.aca.2020.11.033.xml",
+      "candidate_reference": "papers/ibrahim/ran/5/server.json",
+      "adjudication_status": "human_reviewed_subset",
+      "reviewed_reference": "evaluation/references/mjt-reviewed-subset.json",
+      "reviewed_reference_status": "human_reviewed_subset",
+      "latest_run": "harness_runs/20261021T104902Z_10.1016_j.aca.2020.11.033",
+      "latest_attempt": {
+        "run": "harness_runs/20261021T104902Z_10.1016_j.aca.2020.11.033",
+        "status": "complete",
+        "comparison": "harness_runs/20261021T104902Z_10.1016_j.aca.2020.11.033/comparison.json",
+        "verified_predictions": 5,
+        "flagged_predictions": 3,
+        "reviewed_rows_matched": 3,
+        "reviewed_rows_matched_including_material": 2,
+        "reviewed_rows_total": 6,
+        "reviewed_rows_unmatched": 3,
+        "prediction_only": 2,
+        "model_calls": 1,
+        "input_tokens": 5696,
+        "output_tokens": 2458
+      },
+      "recent_attempts": [
+        {
+          "run": "harness_runs/20261021T104753Z_10.1016_j.aca.2020.11.033",
+          "status": "complete",
+          "comparison": "harness_runs/20261021T104753Z_10.1016_j.aca.2020.11.033/comparison.json",
+          "verified_predictions": 7,
+          "flagged_predictions": 0,
+          "reviewed_rows_matched": 4,
+          "reviewed_rows_matched_including_material": 3,
+          "reviewed_rows_total": 6,
+          "reviewed_rows_unmatched": 2,
+          "prediction_only": 3,
+          "model_calls": 1,
+          "input_tokens": 5696,
+          "output_tokens": 1946
+        },
+        {
+          "run": "harness_runs/20261021T104902Z_10.1016_j.aca.2020.11.033",
+          "status": "complete",
+          "comparison": "harness_runs/20261021T104902Z_10.1016_j.aca.2020.11.033/comparison.json",
+          "verified_predictions": 5,
+          "flagged_predictions": 3,
+          "reviewed_rows_matched": 3,
+          "reviewed_rows_matched_including_material": 2,
+          "reviewed_rows_total": 6,
+          "reviewed_rows_unmatched": 3,
+          "prediction_only": 2,
+          "model_calls": 1,
+          "input_tokens": 5696,
+          "output_tokens": 2458
+        }
+      ],
+      "observed_run_range": {
+        "reviewed_rows_matched": [
+          3,
+          4
+        ],
+        "reviewed_rows_matched_including_material": [
+          2,
+          3
+        ],
+        "note": "Observed across these retained runs; subset agreement only, not accuracy."
+      },
+      "previous_run": "harness_runs/20261021T104753Z_10.1016_j.aca.2020.11.033"
     }
   ]
 }

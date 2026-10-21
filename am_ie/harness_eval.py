@@ -61,18 +61,22 @@ def _numbers(value):
     return re.findall(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[-+]?\d+)?", normalized)
 
 
-def _quantity(value, unit):
+def _quantity(value, unit, parameter=""):
     value_norm, unit_norm = _norm_text(value), _norm_text(unit)
     numbers = _numbers(value)
     known_units = (
-        "vol.-%", "vol-%", "mm/sec", "mm/min", "mm/s", "mm2", "mm3",
+        "vol.-%", "vol-%", "k/h", "mm/sec", "mm/min", "mm/s", "mm2", "mm3",
         "g/cm3", "wt%", "khz", "mpa", "kpa", "gpa", "kn", "kw",
         "um", "nm", "mm", "cm", "°c", "m/s", "m/min", "w", "k",
-        "n", "hz", "pa", "s", "min", "hr", "pL", "%",
+        "n", "hz", "pa", "s", "min", "hr", "h", "pL", "%",
     )
     unit_key = unit_norm or next(
         (candidate for candidate in known_units if value_norm.endswith(candidate)), "",
     )
+    if parameter.startswith("Projector Resolution") and unit_key == "um/px":
+        # The reference may preserve the paper's “µm pixel size” unit while
+        # the extractor expresses the taxonomy's equivalent “µm/px”.
+        unit_key = "um"
     if numbers and unit_key:
         return f"{','.join(numbers)}|{unit_key}"
     return _norm_text(f"{value_norm} {unit_norm}")
@@ -81,7 +85,7 @@ def _quantity(value, unit):
 def _row_key(row, vocabulary):
     return (
         _canonical_parameter(row.get("parameter", ""), vocabulary),
-        _quantity(row.get("value", ""), row.get("unit", "")),
+        _quantity(row.get("value", ""), row.get("unit", ""), row.get("parameter", "")),
         _norm_text(row.get("material", "")),
     )
 

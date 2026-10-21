@@ -1,0 +1,58 @@
+{
+  "materials": [
+    {
+      "material": "Veroclear-RGD810 print material",
+      "material_form": "",
+      "quote": "Veroclear-RGD810 print material and SUP707 water-soluble support were purchased from Stratasys, Ltd. (Eden Prairie, MN, USA)."
+    },
+    {
+      "material": "SUP707",
+      "material_form": "",
+      "quote": "Veroclear-RGD810 print material and SUP707 water-soluble support were purchased from Stratasys, Ltd. (Eden Prairie, MN, USA)."
+    }
+  ],
+  "extracted_parameters": [
+    {
+      "parameter": "Machine Make/Model",
+      "value": "Objet Eden 260VS",
+      "unit": "",
+      "material": "",
+      "quote": "The 3D printed device was designed using SolidWorks software 2016–2017 (Dassault Systèmes SE, France) and printed by Objet Eden 260VS professional 3D printer (Stratasys, Ltd., Eden Prairie, MN, USA)."
+    },
+    {
+      "parameter": "Build Orientation",
+      "value": "parallel (angle of 0°)",
+      "unit": "",
+      "material": "Veroclear-RGD810 print material",
+      "quote": "A series of 3D printed devices were designed and printed using an optically transparent build material in three different spatial orientations on the print bed with respect to the direction of the movement of the print head: parallel (angle of 0°), diagonal (45°) and perpendicular (90°)."
+    },
+    {
+      "parameter": "Build Orientation",
+      "value": "diagonal (45°)",
+      "unit": "",
+      "material": "Veroclear-RGD810 print material",
+      "quote": "A series of 3D printed devices were designed and printed using an optically transparent build material in three different spatial orientations on the print bed with respect to the direction of the movement of the print head: parallel (angle of 0°), diagonal (45°) and perpendicular (90°)."
+    },
+    {
+      "parameter": "Build Orientation",
+      "value": "perpendicular (90°)",
+      "unit": "",
+      "material": "Veroclear-RGD810 print material",
+      "quote": "A series of 3D printed devices were designed and printed using an optically transparent build material in three different spatial orientations on the print bed with respect to the direction of the movement of the print head: parallel (angle of 0°), diagonal (45°) and perpendicular (90°)."
+    },
+    {
+      "parameter": "Support Material",
+      "value": "SUP707 water-soluble support",
+      "unit": "",
+      "material": "",
+      "quote": "Veroclear-RGD810 print material and SUP707 water-soluble support were purchased from Stratasys, Ltd. (Eden Prairie, MN, USA)."
+    },
+    {
+      "parameter": "Support Removal Method",
+      "value": "soaked in water for 1–2 h, depending on the length and size of the channel, followed by soaking in 2% NaOH for up to a maximum of 12 h",
+      "unit": "",
+      "material": "SUP707 water-soluble support",
+      "quote": "To dissolve the soluble support, 3D printed devices were soaked in water for 1–2 h, depending on the length and size of the channel, followed by soaking in 2% NaOH for up to a maximum of 12 h."
+    }
+  ]
+}

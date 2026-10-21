@@ -9,6 +9,8 @@ description: "Extraction guidance for PolyJet additive manufacturing papers."
 
 - Process Parameters — MJ-PJ
 - Feedstock Properties — Resin/Droplet
+- Bed / Chamber Details
+- Final Shape / Part Geometry
 
 ## Synonyms
 

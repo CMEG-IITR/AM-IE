@@ -636,7 +636,10 @@ def _call_llm_ollama(prompt, model="llama3.1", host="http://localhost:11434"):
 def _call_llm_gpt5mini(prompt, model="gpt-5-mini"):
     # Lazy import: keeps the openai package (and OPENAI_API_KEY requirement)
     # out of the ollama-backend path entirely.
-    from llm_pipeline import call_gpt_mini
+    try:
+        from .llm_pipeline import call_gpt_mini
+    except ImportError:  # direct-script compatibility
+        from llm_pipeline import call_gpt_mini
     return call_gpt_mini(prompt, model=model)
 
 
@@ -711,7 +714,10 @@ def _call_tool_and_validate(prompt, tool, validate, model="gpt-5-mini"):
     """One tool call + one retry (in case the model returns an empty/degenerate
     but schema-valid shape, e.g. VALID_CATEGORY_CODES rejects nothing since
     the enum already constrains it — this just guards transient API hiccups)."""
-    from llm_pipeline import call_gpt_mini_tool
+    try:
+        from .llm_pipeline import call_gpt_mini_tool
+    except ImportError:  # direct-script compatibility
+        from llm_pipeline import call_gpt_mini_tool
     for attempt in range(2):
         try:
             parsed = call_gpt_mini_tool(

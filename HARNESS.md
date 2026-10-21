@@ -24,6 +24,12 @@ taxonomy constraints, routing, validation, budgets, retries, and persistence
 are harness decisions. Parallel category jobs stay bounded by `--workers`;
 this flow does not need a multi-agent hierarchy to be a harness.
 
+VPP-DLP uses eight focused parameter groups per run: process/feedstock, layer
+thickness, final shape, ceramic type/geometry, remaining L8 properties,
+porosity, remaining L9 properties, and atmosphere. Each group gets its own
+schema and parameter-focused retrieval, then verified rows are merged without
+losing material-tagged or unassigned results.
+
 ## Run artifacts
 
 ```bash
@@ -87,20 +93,21 @@ from extraction quality using the existing `chunk_retrieval.evaluate` path.
 The evaluation essay's central point applies directly here: capability comes
 from the model, harness, environment, and inference budget together. It also
 recommends fixing budgets, versioning the full stack, publishing trajectories,
-and measuring variance. This repo has no checked-in adjudicated evaluation
-corpus yet, so claims about end-to-end quality should wait until that corpus
-and its scoring rules exist.
+and measuring variance. The checked-in references cover reviewed subsets for four process categories
+(PBF, MEX, VPP, and MJT); they are not a full-paper-complete adjudicated corpus.
+Claims about end-to-end accuracy should wait until references cover all relevant
+reported parameters and their completeness has been reviewed.
 
 Reference: [On the Evaluation of Agent Harnesses](https://blog.debargha.com/essays/on-agent-harnesses/).
 
 ## Next steps
 
-1. Move the current monolithic orchestration helpers behind stage interfaces
-   (`parse`, `triage`, `retrieve`, `extract`, `verify`, `score`) while keeping
-   the present CLI as a compatibility entry point.
-2. Add a versioned, adjudicated paper set and a machine-readable scorer.
-3. Add structured per-call trajectories (stage, skill, selected chunk IDs,
-   prompt/config fingerprint, response metadata, verifier decisions), with
-   paper text and secrets excluded from logs by default.
+1. Put orchestration behind explicit stage interfaces (`parse`, `triage`,
+   `retrieve`, `extract`, `verify`, `score`) while keeping the current CLI.
+2. Expand the four reviewed subsets into a versioned, completeness-reviewed
+   evaluation set; SHL is intentionally deferred.
+3. Record structured per-call trajectories (stage, skill, selected chunk IDs,
+   prompt/config fingerprint, response metadata, verifier decisions), keeping
+   paper text and secrets out of logs by default.
 4. Run controlled ablations for retrieval, subtype skills, verification,
    retries, and concurrency before adopting more complex planning or agents.
